@@ -56,3 +56,7 @@ All 44 regression tests passed (`data/verification/upgrade-tests.tap`). Installe
 Each adapter passes an explicit configured model; settings are persisted and validated. Requested model and reported model identity are separate fields. Missing reported identity is not inferred. Tests cover pause during a recovery call, cooldown, three-attempt cap, measured recovery, disabled-provider preservation, and unavailable status on read failure. Real Claude help confirmed its model flag; no new Claude inference or live GitHub mutation was made.
 
 Codex uses the documented `model/list` and `account/rateLimits/read` endpoints: https://learn.chatgpt.com/docs/app-server . Status checks do not create inference turns. Kimi/Claude recovery calls count toward the normal invocation budget, require pending work in running mode, and never bypass authentication or disabled-provider controls.
+
+## Latest live compatibility checks
+
+Three subscription CLI invocations were made on disposable fixtures. Kimi's configured model produced an accepted file proposal, passed the configured tests, and reached independent review. Claude's sonnet alias returned a weekly-limit error for both build and review, so Claude inference compatibility and final integration could not be established. Codex was skipped because its measured quota was exhausted. Both source checkouts stayed unchanged. Full runtime evidence: data/verification/model-compatibility.json. No permissions were bypassed and no user project or GitHub repository was changed.

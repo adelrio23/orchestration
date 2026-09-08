@@ -1,0 +1,15 @@
+// Bounded live compatibility test: two synthetic build/review pairs, at most four model calls.
+import fs from 'node:fs';import path from 'node:path';import {Coordinator,git} from './lib/core.mjs';import {codexRead,quotaWindows} from './lib/provider-status.mjs';import {discover} from './lib/adapters.mjs';
+const report={at:new Date().toISOString(),results:[]};fs.mkdirSync('data/verification',{recursive:true});const save=()=>fs.writeFileSync('data/verification/model-compatibility.json',JSON.stringify(report,null,2));
+try{report.codexWindows=quotaWindows(await codexRead(discover().codex,'account/rateLimits/read'));report.codexStatus=report.codexWindows.some(w=>w.bucket==='codex'&&w.remaining===0)?'blocked_by_measured_quota':'not_tested_in_this_four_call_run';}catch(e){report.codexStatus='status_unavailable';}save();
+for(const builder of ['claude','kimi']){
+ const reviewer=builder==='claude'?'kimi':'claude';const root=path.resolve('data','compat-'+builder+'-'+Date.now()),repo=path.join(root,'repo');fs.mkdirSync(path.join(repo,'test'),{recursive:true});git(repo,'init');
+ fs.writeFileSync(path.join(repo,'math.mjs'),"export function add(){throw Error('not implemented')}\n");
+ fs.writeFileSync(path.join(repo,'test/math.test.mjs'),"import test from 'node:test';import assert from 'node:assert/strict';import {add} from '../math.mjs';test('finite addition',()=>{assert.equal(add(2,3),5);assert.equal(add(-2,.5),-1.5);for(const x of [NaN,Infinity,null,'2',undefined]){assert.throws(()=>add(x,2),TypeError);assert.throws(()=>add(2,x),TypeError)}});\n");
+ git(repo,'add','.');git(repo,'-c','user.name=Compatibility','-c','user.email=test@localhost','-c','commit.gpgsign=false','commit','-m','Synthetic fixture');
+ const c=new Coordinator(path.join(root,'state'));c.configure({repo,requirements:'Implement only finite-number addition in math.mjs.',testCommands:[[process.execPath,'--test','test/math.test.mjs']]});c.setLimits({maxCalls:2,maxAttempts:1,timeoutMs:90000});c.provider('claude',true);
+ const t=c.addTask({title:'Finite addition',requirements:'Replace math.mjs with export function add(a,b). Validate BOTH arguments using Number.isFinite, throw TypeError for invalid arguments, otherwise return a+b. Return the required coordinator-files JSON proposal. Do not modify tests.',acceptance:'Existing finite addition and invalid-input tests pass; only math.mjs changes.',scope:['math.mjs'],eligible:[builder,reviewer]});
+ const row={builder,reviewer,root};report.results.push(row);save();console.log('Testing '+builder+' build');
+ try{await c.dispatch(t,builder);if(t.stage==='review'&&t.status==='queued'){console.log('Testing '+reviewer+' review');await c.dispatch(t,reviewer)}if(t.status==='ready')await c.integrate(t.id);row.status=t.status;row.blocked=t.blocked;}catch(e){row.status='error';row.blocked=e.message}
+ row.calls=c.state.calls;row.runs=c.state.runs;row.task=t;row.sourceUnchanged=!git(repo,'status','--porcelain');save();console.log(JSON.stringify({builder,status:row.status,calls:row.calls,reason:row.blocked}));
+}
