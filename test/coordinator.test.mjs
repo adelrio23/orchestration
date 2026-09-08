@@ -238,3 +238,31 @@ test('later milestones receive integrated source context instead of the untouche
   const {c,t}=await ready();await c.integrate(t.id);fs.writeFileSync(path.join(c.state.integration.dir,'sample.mjs'),'export const integrated = true;');git(c.state.integration.dir,'add','sample.mjs');git(c.state.integration.dir,'-c','user.name=Tests','-c','user.email=tests@localhost','-c','commit.gpgsign=false','commit','-m','Additional integrated fixture');c.state.integration.head=git(c.state.integration.dir,'rev-parse','HEAD');
   assert.ok(c.projectSnapshot().excerpts.some(e=>e.path==='sample.mjs'&&e.content.includes('integrated')));c.planBasis();fs.writeFileSync(path.join(c.state.integration.dir,'sample.mjs'),'external change');assert.throws(()=>c.planBasis(),/integration worktree/);
 });
+
+test('explicit model settings persist and reach every CLI without shell parsing', () => {
+  const c=fixture(async()=>okay());c.setModels({provider:'codex',build:'gpt-5.6-sol',review:'gpt-6-astra'});
+  assert.equal(new Coordinator(c.dir).state.adapters.codex.models.review,'gpt-6-astra');
+  for(const name of ['codex','kimi','claude']){const spec=invocation(name,{command:name,models:{build:'test-model',review:'review-model'}},'hello','build',c.state.repo);assert.equal(spec.args[spec.args.indexOf('--model')+1],'test-model')}
+  assert.throws(()=>c.setModels({provider:'codex',build:'--bad',review:'x'}));
+  const parsed=parseResult('claude',{code:0,output:JSON.stringify({type:'result',result:'ok',modelUsage:{'claude-example':{}}})});assert.deepEqual(parsed.reportedModels,['claude-example']);
+});
+test('measured quota blocks and recovers eligible work without overriding pause or disabled providers',async()=>{
+  const c=fixture(async()=>okay());const t=add(c);t.status='waiting';
+  const reader=remaining=>async(config,method)=>method==='model/list'?{data:[{model:'example'}]}:{rateLimitsByLimitId:{codex:{limitId:'codex',primary:{usedPercent:100-remaining,resetsAt:123}}}};
+  await c.monitorProviders(true,reader(0));assert.match(c.state.providers.codex.blocked,/quota/);assert.equal(c.state.calls,0);
+  await c.monitorProviders(true,reader(10));assert.equal(c.state.providers.codex.blocked,null);assert.equal(t.status,'queued');assert.equal(c.state.mode,'paused');
+  c.provider('codex',false);await c.monitorProviders(true,reader(20));assert.equal(c.state.providers.codex.enabled,false);
+  await c.monitorProviders(true,async()=>{throw Error('offline')});assert.deepEqual(c.state.monitor.windows,[]);assert.equal(c.state.monitor.error,'offline');
+});
+test('recovery probes obey pause, call budget, cooldown and three-attempt cap',async()=>{
+  let calls=0;const c=fixture(async()=>{calls++;return {status:'quota',text:'',diagnostic:'quota'}});add(c);c.state.providers.kimi.blocked='quota';
+  await c.recoverProvider();assert.equal(calls,0);c.control('start');
+  await c.recoverProvider();assert.equal(calls,1);await c.recoverProvider();assert.equal(calls,1);
+  for(let i=0;i<4;i++){c.state.providers.kimi.nextProbe=0;await c.recoverProvider()}assert.equal(calls,3);assert.equal(c.state.calls,3);
+  assert.equal(c.state.externalOperation,null);
+});
+test('successful recovery queues waiting work and pauses remain respected during an in-flight check',async()=>{
+  let resolve;const c=fixture(()=>new Promise(r=>resolve=r));const t=add(c);t.status='waiting';c.state.providers.kimi.blocked='quota';c.control('start');
+  const pending=c.recoverProvider();assert.equal(c.monitoring,true);assert.throws(()=>c.setModels({provider:'kimi',build:'a',review:'b'}));c.control('pause');resolve(okay('READY'));await pending;
+  assert.equal(c.state.providers.kimi.blocked,null);assert.equal(t.status,'queued');assert.equal(c.state.mode,'paused');
+});

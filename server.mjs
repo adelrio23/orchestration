@@ -29,6 +29,8 @@ export function createServer(engine) {
         const body = JSON.parse(raw || '{}');
         if (url.pathname === '/api/folders') value = browseFolders(body.folder);
         else if (url.pathname === '/api/configure') engine.configure(body);
+        else if (url.pathname === '/api/models') engine.setModels(body);
+        else if (url.pathname === '/api/check-usage') await engine.monitorProviders(true);
         else if (url.pathname === '/api/limits') engine.setLimits(body);
         else if (url.pathname === '/api/tasks') value = engine.addTask(body);
         else if (url.pathname === '/api/control') engine.control(body.action);
@@ -62,14 +64,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let server;
   try {
     const engine = new Coordinator(dir); server = createServer(engine);
-    const timer = setInterval(() => engine.tick(), 1000);
+    const timer = setInterval(() => { engine.monitorProviders().catch(()=>{}); engine.recoverProvider().catch(()=>{}); engine.tick(); }, 1000);
     server.listen(Number(process.env.PORT || 4317), '127.0.0.1', () => console.log(`Local coordinator: http://127.0.0.1:${server.address().port} (paused)`));
     server.on('error', error => { console.error(error.message); clearInterval(timer); fs.unlinkSync(lock); process.exitCode = 1; });
     let closing = false;
     const close = () => {
       if (closing) return; closing = true; clearInterval(timer); engine.control('pause');
       console.log('Paused. Draining bounded active calls before shutdown.');
-      const drain = setInterval(() => { if (!engine.running.size && !engine.integrating && !engine.chatting && !engine.githubBusy) { clearInterval(drain); server.close(() => { fs.unlinkSync(lock); }); } }, 200);
+      const drain = setInterval(() => { if (!engine.running.size && !engine.integrating && !engine.chatting && !engine.monitoring && !engine.githubBusy) { clearInterval(drain); server.close(() => { fs.unlinkSync(lock); }); } }, 200);
     };
     process.on('SIGINT', close); process.on('SIGTERM', close);
   } catch (error) { fs.unlinkSync(lock); throw error; }

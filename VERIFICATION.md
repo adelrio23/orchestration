@@ -2,7 +2,7 @@
 
 ## Result
 
-**40 offline tests passed**, including real disposable Git worktree/merge tests. A separate **live two-agent workflow passed** using the installed subscription CLIs: Codex builder → tests → Kimi reviewer → combined tests → local integration. A further live two-call planning check passed. No GitHub mutation or Claude model call was made.
+**44 offline tests passed**, including real disposable Git worktree/merge tests. A separate **live two-agent workflow passed** using the installed subscription CLIs: Codex builder → tests → Kimi reviewer → combined tests → local integration. A further live two-call planning check passed. No GitHub mutation or Claude model call was made.
 
 ## Automated planning validation
 
@@ -45,6 +45,14 @@ The dashboard was opened and inspected in the Codex browser. New and Existing pr
 
 - **Claude model execution:** not run. After its quota recovers, explicitly enable it and make one bounded chat/review smoke call. Help/auth checks do not prove model access.
 - **Live GitHub creation/push:** not performed because no destination repository has been chosen for publication. Command interfaces, authentication, translated Git metadata and simulated success/failure gates are verified.
-- **Remaining quota/reset monitoring:** not implemented. The coordinator detects failures during calls and waits or reassigns; re-enabling after recovery is manual. It never labels token estimates as quota balances.
+- **Remaining quota/reset monitoring:** Codex measured limits and reset timestamps are verified through its installed app-server. Kimi/Claude percentages are unavailable; bounded recovery calls are tested with simulated quota/recovery responses, not a live quota-reset cycle.
 - **Enterprise readiness or large autonomous project planning:** not established. Automatic planning is bounded to one to three small milestones in a single-user, one-project-per-workspace coordinator. Larger applications need further validation.
 - **Hard per-provider internal request budgets:** the app caps invocations, time, output and workload; third-party CLI internal model/tool requests are not universally measurable or controllable.
+
+## Model and recovery upgrade
+
+All 44 regression tests passed (`data/verification/upgrade-tests.tap`). Installed Codex app-server read-only calls returned six available model IDs and subscription quota windows. The restarted HTTP server returned that catalog and live windows with zero model calls. It detected an exhausted Codex window and blocked that provider. Project discovery returned the permanent `Documents/Codex/yt-autonomous-growth` worktree and linked worktrees.
+
+Each adapter passes an explicit configured model; settings are persisted and validated. Requested model and reported model identity are separate fields. Missing reported identity is not inferred. Tests cover pause during a recovery call, cooldown, three-attempt cap, measured recovery, disabled-provider preservation, and unavailable status on read failure. Real Claude help confirmed its model flag; no new Claude inference or live GitHub mutation was made.
+
+Codex uses the documented `model/list` and `account/rateLimits/read` endpoints: https://learn.chatgpt.com/docs/app-server . Status checks do not create inference turns. Kimi/Claude recovery calls count toward the normal invocation budget, require pending work in running mode, and never bypass authentication or disabled-provider controls.
