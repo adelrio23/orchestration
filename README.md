@@ -90,3 +90,8 @@ Export portable project memory from Work. Full CLI transcripts are not repeatedl
 ## Model controls
 
 Work → Models & availability configures explicit coding and planning/chat/review model IDs for each provider. Codex choices come from its installed app-server model catalog; custom IDs may be entered. Defaults are GPT-6 Astra, Kimi Code, and the Claude sonnet alias. History distinguishes requested model from provider-reported model IDs; missing reported IDs remain unavailable. Model availability may differ by subscription. Model settings change only while paused and drained.
+## Routine access and model checks
+
+Project reads are non-interactive within the adapter's existing restrictions. Codex keeps its read-only sandbox and uses a never-prompt approval policy: actions requiring broader permission fail instead of hanging. Claude allows its project Read rule and Glob/Grep tools; shell, file modification and delegation tools remain unavailable. The coordinator applies validated proposals and runs configured tests itself. No login, OS access, or sandbox override is automatically granted.
+
+Work → Test selected provider’s saved models performs at most two live subscription calls in a synthetic Git repository. It checks a file proposal against executable tests and requires the review model to reject defective code. Results are keyed by provider and saved model choices. A passing result is a small protocol/behavior check, not a claim of universal reliability. Quota-blocked or budget-blocked checks are marked pending and consume no inference calls; use the button again after recovery. This avoids automatic retry loops.

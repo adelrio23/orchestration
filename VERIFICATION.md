@@ -60,3 +60,9 @@ Codex uses the documented `model/list` and `account/rateLimits/read` endpoints: 
 ## Latest live compatibility checks
 
 Three subscription CLI invocations were made on disposable fixtures. Kimi's configured model produced an accepted file proposal, passed the configured tests, and reached independent review. Claude's sonnet alias returned a weekly-limit error for both build and review, so Claude inference compatibility and final integration could not be established. Codex was skipped because its measured quota was exhausted. Both source checkouts stayed unchanged. Full runtime evidence: data/verification/model-compatibility.json. No permissions were bypassed and no user project or GitHub repository was changed.
+
+## Routine access and compatibility controls
+
+The full 46-test suite passed, followed by three focused tests including the added Pause-during-compatibility case. The dashboard's live Kimi check passed both synthetic build acceptance tests and rejection of defective code, using two shared-budget calls. Codex/GPT-6 Astra and Claude/sonnet show pending_quota without inference calls. Results are persisted in the main dashboard state under compatibility.
+
+Routine project read permissions are explicit in the adapters; Codex retains its read-only sandbox and fails requests requiring elevated approval instead of prompting. Claude permits project reads and its existing Glob/Grep tools. Permission denials are classified separately. The compatibility checker uses disposable fixtures and never changes the selected project. Tests include shared budgets, quota skips, model selection, access boundaries, and stopping before the next call when Pause is pressed.

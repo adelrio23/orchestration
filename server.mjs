@@ -1,3 +1,4 @@
+import { checkCompatibility } from './lib/compatibility.mjs';
 import { projectChoices, browseFolders } from './lib/project-picker.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -29,6 +30,7 @@ export function createServer(engine) {
         const body = JSON.parse(raw || '{}');
         if (url.pathname === '/api/folders') value = browseFolders(body.folder);
         else if (url.pathname === '/api/configure') engine.configure(body);
+        else if (url.pathname === '/api/check-model') value = await checkCompatibility(engine,body.provider);
         else if (url.pathname === '/api/models') engine.setModels(body);
         else if (url.pathname === '/api/check-usage') await engine.monitorProviders(true);
         else if (url.pathname === '/api/limits') engine.setLimits(body);

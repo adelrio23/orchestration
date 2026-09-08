@@ -266,3 +266,22 @@ test('successful recovery queues waiting work and pauses remain respected during
   const pending=c.recoverProvider();assert.equal(c.monitoring,true);assert.throws(()=>c.setModels({provider:'kimi',build:'a',review:'b'}));c.control('pause');resolve(okay('READY'));await pending;
   assert.equal(c.state.providers.kimi.blocked,null);assert.equal(t.status,'queued');assert.equal(c.state.mode,'paused');
 });
+
+test('compatibility checks use saved models, synthetic fixtures and the shared budget',async()=>{
+ const {checkCompatibility}=await import('../lib/compatibility.mjs');
+ const c=fixture(async(name,config,prompt,role)=>okay(role==='build'?'<coordinator-files>{"files":[{"path":"math.mjs","content":"export function add(a,b){if(!Number.isFinite(a)||!Number.isFinite(b))throw new TypeError();return a+b}"}]}</coordinator-files>':'Defective implementation.\nREVIEW: FAIL'));
+ const head=git(c.state.repo,'rev-parse','HEAD');const r=await checkCompatibility(c,'kimi');assert.equal(r.status,'passed');assert.equal(c.state.calls,2);assert.equal(git(c.state.repo,'rev-parse','HEAD'),head);assert.equal(git(c.state.repo,'status','--porcelain'),'');assert.equal(c.chatting,false);
+ c.state.providers.codex.blocked='quota: exhausted';assert.equal((await checkCompatibility(c,'codex')).status,'pending_quota');assert.equal(c.state.calls,2);
+ c.state.limits.maxCalls=2;assert.equal((await checkCompatibility(c,'kimi')).status,'pending_budget');
+});
+test('routine access stays bounded and permission denials are explicit',()=>{
+ const c=invocation('codex',{command:'codex'},'x','build','.');assert.ok(c.args.includes('approval_policy="never"'));assert.ok(c.args.includes('read-only'));assert.ok(!c.args.includes('--dangerously-bypass-approvals-and-sandbox'));
+ const a=invocation('claude',{command:'claude'},'x','build','.');assert.equal(a.args[a.args.indexOf('--allowedTools')+1],'Read(./**),Glob,Grep');assert.ok(!a.args.includes('--dangerously-skip-permissions'));
+ assert.equal(parseResult('claude',{code:0,output:JSON.stringify({type:'result',result:'Could not inspect source',permission_denials:[{tool_name:'Read'}]})}).status,'permission');
+});
+test('Pause during compatibility prevents the second model call',async()=>{
+ const {checkCompatibility}=await import('../lib/compatibility.mjs');let resolve;
+ const c=fixture(()=>new Promise(r=>resolve=r));const pending=checkCompatibility(c,'kimi');c.control('pause');
+ resolve(okay('<coordinator-files>{"files":[{"path":"math.mjs","content":"export function add(a,b){if(!Number.isFinite(a)||!Number.isFinite(b))throw new TypeError();return a+b}"}]}</coordinator-files>'));
+ const result=await pending;assert.equal(c.state.calls,1);assert.match(result.detail,/stopped by Pause/);assert.equal(c.chatting,false);
+});
