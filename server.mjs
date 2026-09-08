@@ -1,3 +1,4 @@
+import { projectChoices, browseFolders } from './lib/project-picker.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,12 +21,14 @@ export function createServer(engine) {
       if (req.headers['x-coordinator-token'] !== token) { res.writeHead(403); res.end('Local session required'); return; }
       let value;
       if (req.method === 'GET' && url.pathname === '/api/state') value = engine.state;
+      else if (req.method === 'GET' && url.pathname === '/api/projects') value = projectChoices(engine);
       else if (req.method === 'GET' && url.pathname === '/api/memory') value = engine.portableMemory();
       else if (req.method === 'POST') {
         if (!String(req.headers['content-type']).startsWith('application/json')) throw Error('JSON required');
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 50000) throw Error('Request too large'); }
         const body = JSON.parse(raw || '{}');
-        if (url.pathname === '/api/configure') engine.configure(body);
+        if (url.pathname === '/api/folders') value = browseFolders(body.folder);
+        else if (url.pathname === '/api/configure') engine.configure(body);
         else if (url.pathname === '/api/limits') engine.setLimits(body);
         else if (url.pathname === '/api/tasks') value = engine.addTask(body);
         else if (url.pathname === '/api/control') engine.control(body.action);
