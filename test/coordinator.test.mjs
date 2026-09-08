@@ -10,6 +10,7 @@ import { createServer } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
+const planReply = (tasks = [{ title: 'First milestone', requirements: 'Implement a useful feature and tests', acceptance: 'Feature tests pass', scope: ['app.txt', 'test/'] }], questions = []) => '<coordinator-plan>'+JSON.stringify({summary:'A small sequential plan',questions,tasks})+'</coordinator-plan>';
 function fixture(executor, testRunner) {
   const dir = fs.mkdtempSync(path.join(fixtures, 'case-')), repo = path.join(dir, 'repo'); fs.mkdirSync(repo);
   git(repo, 'init'); fs.writeFileSync(path.join(repo, 'app.txt'), 'initial\n'); git(repo, 'add', '.');
@@ -191,4 +192,49 @@ test('local HTTP mutations require session token and matching origin', async () 
     assert.equal((await fetch(base + '/api/control', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: '{"action":"start"}' })).status, 400);
     const r = await fetch(base + '/api/control', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json' }, body: '{"action":"start"}' }); assert.equal(r.status, 200); assert.equal(c.state.mode, 'running');
   } finally { server.closeAllConnections(); await new Promise(r => server.close(r)); }
+});
+test('lead plan is durable and does not start work when draft mode is requested', async () => {
+  const c = fixture(async () => okay(planReply())); const r = await c.chat({provider:'codex',intent:'plan',message:'Plan the app'});
+  assert.equal(r.plan.status,'draft'); assert.equal(c.state.calls,1); assert.equal(c.state.tasks.length,0); assert.equal(c.state.mode,'paused');
+  const reload = new Coordinator(c.dir); const tasks = reload.acceptPlan(r.id); assert.equal(tasks.length,1); assert.equal(reload.state.mode,'paused'); assert.equal(tasks[0].independent,false);
+  assert.throws(()=>reload.acceptPlan(r.id),/unqueued/);
+});
+test('automatic planning uses one independent review then queues and starts sequential milestones', async () => {
+  const calls=[]; const c=fixture(async(p)=>{calls.push(p);return okay(calls.length===1?planReply([{title:'Foundation',requirements:'Build foundation',acceptance:'Foundation tests pass',scope:['app.txt']},{title:'Follow-up',requirements:'Extend foundation',acceptance:'New tests pass',scope:['app.txt']} ]):'The plan is scoped and testable.\nREVIEW: PASS')});
+  const r=await c.chat({provider:'codex',intent:'plan',autoStart:true,message:'Build it'});
+  assert.deepEqual(calls,['codex','kimi']);assert.equal(c.state.calls,2);assert.equal(c.state.mode,'running');assert.equal(r.plan.status,'queued');assert.equal(c.state.tasks.length,2);assert.deepEqual(c.state.tasks[1].dependencies,[c.state.tasks[0].id]);
+});
+test('rejected or quota-failed independent plan review never loops or starts tasks', async () => {
+  for(const failed of [okay('Scope is too broad.\nREVIEW: FAIL'),{status:'quota',diagnostic:'Usage limit'}]){
+    let calls=0;const c=fixture(async()=>++calls===1?okay(planReply()):failed);const r=await c.chat({provider:'codex',intent:'plan',autoStart:true,message:'Build it'});
+    assert.equal(calls,2);assert.equal(c.state.tasks.length,0);assert.equal(c.state.mode,'paused');assert.equal(r.plan.status,'needs_attention');c.tick();assert.equal(calls,2);
+  }
+});
+test('questions or unsafe plans cannot create tasks', async () => {
+  const c=fixture(async()=>okay(planReply([],['Who will use this?'])));const r=await c.chat({provider:'codex',intent:'plan',autoStart:true,message:'Build something'});assert.equal(r.plan.status,'questions');assert.equal(c.state.calls,1);assert.throws(()=>c.acceptPlan(r.id),/unqueued/);
+  c.executor=async()=>okay(planReply([{title:'Unsafe',requirements:'bad',acceptance:'bad',scope:['../escape']} ]));const bad=await c.chat({provider:'codex',intent:'plan',message:'Try again'});assert.equal(bad.status,'invalid_plan');assert.equal(c.state.tasks.length,0);
+});
+test('plan acceptance rejects stale decisions and atomically respects task/call limits', async () => {
+  const c=fixture(async()=>okay(planReply()));const r=await c.chat({provider:'codex',intent:'plan',message:'Plan'});c.decision('Change the goal');assert.throws(()=>c.acceptPlan(r.id),/changed/);assert.equal(c.state.tasks.length,0);
+  const two=fixture(async()=>okay(planReply([{title:'One',requirements:'one',acceptance:'one',scope:['app.txt']},{title:'Two',requirements:'two',acceptance:'two',scope:['app.txt']} ])));const draft=await two.chat({provider:'codex',intent:'plan',message:'Plan'});two.setLimits({maxTasks:1});assert.throws(()=>two.acceptPlan(draft.id),/Task budget/);assert.equal(two.state.tasks.length,0);assert.equal(draft.plan.status,'draft');
+  two.setLimits({maxTasks:20,maxCalls:2});assert.throws(()=>two.acceptPlan(draft.id),/Not enough calls/);
+});
+test('Pause during plan review prevents automatic start and persists a running review for crash recovery', async () => {
+  let release,calls=0;const c=fixture(async()=>{if(++calls===1)return okay(planReply());await new Promise(r=>release=r);return okay('REVIEW: PASS')});
+  const pending=c.chat({provider:'codex',intent:'plan',autoStart:true,message:'Build'});while(!release)await new Promise(r=>setTimeout(r,1));
+  const disk=JSON.parse(fs.readFileSync(c.file));assert.equal(disk.chats[0].status,'running');assert.equal(disk.chats[0].phase,'independent_plan_review');c.control('pause');release();const r=await pending;assert.equal(c.state.mode,'paused');assert.equal(r.phase,'queued_and_paused');assert.equal(c.state.tasks.length,1);
+});
+test('planning context includes bounded tracked source while excluding secrets and untracked files', () => {
+  const c=fixture();fs.mkdirSync(path.join(c.state.repo,'test'));fs.writeFileSync(path.join(c.state.repo,'test/sample.test.mjs'),'// test evidence\n'+'x'.repeat(8000));
+  fs.writeFileSync(path.join(c.state.repo,'.env'),'SECRET=do-not-send');fs.writeFileSync(path.join(c.state.repo,'secret.json'),'do-not-send');fs.writeFileSync(path.join(c.state.repo,'untracked.js'),'untracked-private');
+  git(c.state.repo,'add','--','test/sample.test.mjs','.env','secret.json');
+  const snapshot=c.projectSnapshot(), serialized=JSON.stringify(snapshot);
+  assert.ok(snapshot.excerpts.some(e=>e.path==='test/sample.test.mjs'));assert.ok(snapshot.excerpts.reduce((n,e)=>n+e.content.length,0)<=6000);assert.ok(snapshot.excerpts.every(e=>e.content.length<=1500));assert.doesNotMatch(serialized,/do-not-send|untracked-private|\.env|secret\.json/);
+});
+test('source edits after planning invalidate automatic plan acceptance', async () => {
+  const c=fixture(async()=>okay(planReply()));const r=await c.chat({provider:'codex',intent:'plan',message:'Plan'});fs.writeFileSync(path.join(c.state.repo,'app.txt'),'changed after planning');assert.throws(()=>c.acceptPlan(r.id),/changed/);assert.equal(c.state.tasks.length,0);
+});
+test('later milestones receive integrated source context instead of the untouched checkout', async () => {
+  const {c,t}=await ready();await c.integrate(t.id);fs.writeFileSync(path.join(c.state.integration.dir,'sample.mjs'),'export const integrated = true;');git(c.state.integration.dir,'add','sample.mjs');git(c.state.integration.dir,'-c','user.name=Tests','-c','user.email=tests@localhost','-c','commit.gpgsign=false','commit','-m','Additional integrated fixture');c.state.integration.head=git(c.state.integration.dir,'rev-parse','HEAD');
+  assert.ok(c.projectSnapshot().excerpts.some(e=>e.path==='sample.mjs'&&e.content.includes('integrated')));c.planBasis();fs.writeFileSync(path.join(c.state.integration.dir,'sample.mjs'),'external change');assert.throws(()=>c.planBasis(),/integration worktree/);
 });

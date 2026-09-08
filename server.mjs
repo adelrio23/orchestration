@@ -34,6 +34,7 @@ export function createServer(engine) {
         else if (url.pathname === '/api/retry') engine.retry(body.id, body.confirmation);
         else if (url.pathname === '/api/integrate') await engine.integrate(body.id);
         else if (url.pathname === '/api/chat') value = await engine.chat(body);
+        else if (url.pathname === '/api/accept-plan') value = engine.acceptPlan(body.id);
         else if (url.pathname === '/api/policy') engine.setPolicy(body);
         else if (url.pathname === '/api/local-repository') value = createLocal(engine, body.name);
         else if (url.pathname === '/api/project') value = createProject(engine, body);

@@ -21,9 +21,11 @@ Each dashboard controls one repository. The default state directory is `data/` b
 ## Use the dashboard
 
 1. **Project:** choose **New project** to create and configure a local Git repository in one step, or **Existing repository** to use a clean repository with an initial commit. Enter the goal. The default test command expects Node tests in `test/*.test.mjs`; change it for your stack. Only use trusted test commands. The YouTube checkout is explicitly excluded.
-2. **Work:** add a bounded task, clear acceptance criteria and the relative files/directories it may change. Include test files. Start execution. Project-wide decisions are available in subsequent handoffs; they do not interrupt an active CLI prompt.
+2. **Work:** use **Plan and build** to describe the next feature (or leave the message blank to use the project goal). The lead drafts 1–3 small milestones, then a different available agent reviews the plan once. If it passes validation, has enough remaining budget, and still matches the project state, the coordinator queues the milestones sequentially and starts work automatically. It stops for essential clarification, a rejected plan, or a failed check; it does not loop until the reviewer agrees. You can choose **Show me a draft first**, or add tasks manually with acceptance criteria and owned paths. Project-wide decisions are available in subsequent handoffs; they do not interrupt an active CLI prompt.
+
+   Planning includes a bounded tracked-file list and up to six source/test excerpts (6,000 content characters total). Common secret/configuration paths and untracked files are excluded, and known secret patterns are redacted. Excerpts are supplied to the chosen model providers as project context. After integration, the next plan sees the integration worktree rather than the untouched original checkout. This is a partial view, not a complete code audit.
 3. **Chat:** while paused and drained, choose an available agent and send a message. Replies arrive when the bounded call finishes. Conversations are read-only and saved; recent exchanges, requirements and relevant task handoffs provide context. Use a decision/task to turn a discussion into instructions for future execution. There is no concurrent group-chat broadcast.
-4. **History:** inspect attempts, measured CLI usage when reported, explicitly labeled estimates, tests and checkpoints. Kimi's observed stream did not provide usage, so it is unavailable, never reported as zero.
+4. **Team activity / History:** Work shows actual handoffs, test outcomes, review findings, integration commits and your decisions in a readable timeline. History retains detailed attempts, measured CLI usage when reported, explicitly labeled estimates and checkpoints. Kimi's observed stream did not provide usage, so it is unavailable, never reported as zero.
 5. **GitHub (optional):** authorize the exact private `owner/repository` target. Choose creation or connection. You may authorize automatic pushing once at setup. Creation is attempted once. Each approved candidate may integrate once and push once, without force, to a dedicated coordinator branch. The default branch and source checkout are not advanced.
 
 Use Pause to stop new dispatch, not to suspend a process mid-write. An active call finishes or reaches its timeout before ownership is released. Resume continues eligible queued work. Checkpoints contain task ownership, requirements, acceptance criteria, decisions, commits, tests and concise handoffs.
@@ -46,13 +48,15 @@ Defaults: **12 total coordinator CLI attempts**, **2 attempts per task stage**, 
 
 These are coordinator-invocation limits, not a promise to meter or cap every model/tool request inside a third-party CLI. Exact provider quota balances/reset times are not universally available. Token estimates use characters/4 and exclude CLI system context and tool calls. Routing uses recorded role-specific completion/failure outcomes only; it is not model training or a quality ranking.
 
-Concurrency above one requires every active task to be explicitly independent with disjoint owned paths. Dependencies must already be integrated. This first version does not autonomously turn a broad enterprise brief into a complete task graph: define milestones, or discuss a breakdown in Chat and add reviewed tasks.
+Concurrency above one requires every active task to be explicitly independent with disjoint owned paths. Dependencies must already be integrated. Lead-generated plans are sequential. Each planning request covers the next 1–3 milestones, not a complete enterprise program: there is no recursive replanning or automatic budget expansion. Automatic planning requires enough budget for the independent plan review plus an initial build and review for every milestone; repairs may require additional remaining attempts. Pressing Pause during planning prevents automatic start after review.
 
 ## Validation and acceptance
 
 Run `node --test test/*.test.mjs` (or `npm test`). Test fixtures are disposable Git repositories under `data/test-fixtures/`; tests never call paid models or GitHub. `node doctor.mjs` performs version/auth checks without model calls. `node smoke.mjs codex` and `node smoke.mjs kimi` are optional **live subscription calls**; do not run repeatedly. The smoke utility deliberately excludes Claude.
 
 See `VERIFICATION.md` for the actual live/simulated verification boundary.
+
+`node planning-smoke.mjs` is an optional live two-call check of lead planning and independent plan review. It uses a disposable repository and verifies that one milestone is queued and the scheduler is enabled, then pauses before any builders are dispatched.
 
 The first version is accepted when:
 
