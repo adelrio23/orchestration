@@ -8,6 +8,7 @@ import { parseResult, invocation } from '../lib/adapters.mjs';
 import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
+import { setupStatus, privateRepositories, githubReadiness } from '../lib/setup.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
 const planReply = (tasks = [{ title: 'First milestone', requirements: 'Implement a useful feature and tests', acceptance: 'Feature tests pass', scope: ['app.txt', 'test/'] }], questions = []) => '<coordinator-plan>'+JSON.stringify({summary:'A small sequential plan',questions,tasks})+'</coordinator-plan>';
@@ -284,4 +285,73 @@ test('Pause during compatibility prevents the second model call',async()=>{
  const c=fixture(()=>new Promise(r=>resolve=r));const pending=checkCompatibility(c,'kimi');c.control('pause');
  resolve(okay('<coordinator-files>{"files":[{"path":"math.mjs","content":"export function add(a,b){if(!Number.isFinite(a)||!Number.isFinite(b))throw new TypeError();return a+b}"}]}</coordinator-files>'));
  const result=await pending;assert.equal(c.state.calls,1);assert.match(result.detail,/stopped by Pause/);assert.equal(c.chatting,false);
+});
+
+test('setup reporting names the fix for every unready dependency without model calls', async () => {
+  const c = fixture(async () => { throw Error('setup must never invoke a model'); });
+  // Every local probe fails: nothing is installed or signed in.
+  const runner = async () => ({ code: 1, reason: '', output: 'not found', durationMs: 1 });
+  const status = await setupStatus(c, runner);
+  assert.equal(status.canBuild, false);
+  assert.equal(status.canReview, false);
+  assert.equal(status.github.ready, false);
+  assert.deepEqual(status.agents.map(a => a.name).sort(), ['claude', 'codex', 'kimi']);
+  for (const agent of status.agents) {
+    assert.equal(agent.ready, false);
+    assert.ok(agent.fix, `${agent.name} reports how to fix it`);
+  }
+  assert.ok(status.github.fix, 'GitHub CLI reports how to sign in');
+  assert.equal(status.project.ready, true, 'the fixture already configured a repository');
+  assert.equal(status.target.ready, false, 'no GitHub target is authorized by default');
+});
+
+test('setup reporting distinguishes an installed-but-signed-out agent from a missing one', async () => {
+  const c = fixture(async () => { throw Error('setup must never invoke a model'); });
+  const runner = async (command, args) => {
+    if (args.includes('--version')) return { code: 0, reason: '', output: 'codex 1.2.3', durationMs: 1 };
+    return { code: 1, reason: '', output: 'not logged in', durationMs: 1 }; // auth probes fail
+  };
+  const status = await setupStatus(c, runner);
+  for (const agent of status.agents) {
+    assert.equal(agent.installed, true, `${agent.name} is detected as installed`);
+    assert.equal(agent.ready, false, `${agent.name} is not signed in`);
+    assert.match(agent.detail, /authentication|login|auth/i);
+  }
+  assert.equal(status.canBuild, false);
+});
+
+test('review readiness requires two independent signed-in agents', async () => {
+  const c = fixture(async () => { throw Error('setup must never invoke a model'); });
+  // Codex passes both probes; kimi and claude are absent.
+  const runner = async (command, args) => {
+    const codex = String(command).includes('codex');
+    if (args.includes('--version')) return { code: codex ? 0 : 1, reason: '', output: codex ? 'codex 1.2.3' : '', durationMs: 1 };
+    if (args.includes('status') && codex) return { code: 0, reason: '', output: 'Logged in using ChatGPT', durationMs: 1 };
+    return { code: 1, reason: '', output: '', durationMs: 1 };
+  };
+  const status = await setupStatus(c, runner);
+  assert.deepEqual(status.usableAgents, ['codex']);
+  assert.equal(status.canBuild, true, 'one agent can build');
+  assert.equal(status.canReview, false, 'independent review still needs a second agent');
+});
+
+test('only private repositories are offered as GitHub targets', async () => {
+  const runner = async () => ({ code: 0, reason: '', durationMs: 1, output: JSON.stringify([
+    { nameWithOwner: 'me/public-one', isPrivate: false },
+    { nameWithOwner: 'me/private-b', isPrivate: true },
+    { nameWithOwner: 'me/private-a', isPrivate: true }
+  ]) });
+  assert.deepEqual(await privateRepositories(process.cwd(), runner), ['me/private-a', 'me/private-b']);
+});
+
+test('repository listing reports a signed-out GitHub CLI instead of returning nothing', async () => {
+  const runner = async () => ({ code: 1, reason: '', output: 'gh: not authenticated', durationMs: 1 });
+  await assert.rejects(() => privateRepositories(process.cwd(), runner), /Sign in to the GitHub CLI/);
+});
+
+test('the GitHub sign-in report names the account', async () => {
+  const runner = async () => ({ code: 0, reason: '', durationMs: 1, output: '✓ Logged in to github.com account adelrio23 (keyring)' });
+  const status = await githubReadiness(process.cwd(), runner);
+  assert.equal(status.ready, true);
+  assert.equal(status.user, 'adelrio23');
 });

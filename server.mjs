@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Coordinator } from './lib/core.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from './lib/repositories.mjs';
+import { setupStatus, privateRepositories } from './lib/setup.mjs';
 
 export function createServer(engine) {
   engine.pushHandler = task => pushCandidate(engine, task);
@@ -24,6 +25,8 @@ export function createServer(engine) {
       if (req.method === 'GET' && url.pathname === '/api/state') value = engine.state;
       else if (req.method === 'GET' && url.pathname === '/api/projects') value = projectChoices(engine);
       else if (req.method === 'GET' && url.pathname === '/api/memory') value = engine.portableMemory();
+      else if (req.method === 'GET' && url.pathname === '/api/setup') value = await setupStatus(engine);
+      else if (req.method === 'GET' && url.pathname === '/api/github-repositories') value = await privateRepositories(engine.state.repo || process.cwd());
       else if (req.method === 'POST') {
         if (!String(req.headers['content-type']).startsWith('application/json')) throw Error('JSON required');
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 50000) throw Error('Request too large'); }
