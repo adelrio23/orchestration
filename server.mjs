@@ -25,7 +25,7 @@ export function createServer(engine) {
       if (req.method === 'GET' && url.pathname === '/api/state') value = engine.state;
       else if (req.method === 'GET' && url.pathname === '/api/projects') value = projectChoices(engine);
       else if (req.method === 'GET' && url.pathname === '/api/memory') value = engine.portableMemory();
-      else if (req.method === 'GET' && url.pathname === '/api/setup') value = await setupStatus(engine);
+      else if (req.method === 'GET' && url.pathname === '/api/setup') value = { ...await setupStatus(engine), availability: engine.availability() };
       else if (req.method === 'GET' && url.pathname === '/api/github-repositories') value = await listRepositories(engine.state.repo || process.cwd());
       else if (req.method === 'POST') {
         if (!String(req.headers['content-type']).startsWith('application/json')) throw Error('JSON required');
@@ -46,6 +46,7 @@ export function createServer(engine) {
         else if (url.pathname === '/api/chat') value = await engine.chat(body);
         else if (url.pathname === '/api/accept-plan') value = engine.acceptPlan(body.id);
         else if (url.pathname === '/api/policy') engine.setPolicy(body);
+        else if (url.pathname === '/api/run-tests') value = await engine.runProjectTests();
         else if (url.pathname === '/api/research') value = await engine.research(body);
         else if (url.pathname === '/api/research-search') value = await engine.searchResearch(body);
         else if (url.pathname === '/api/research-review') value = await engine.reviewResearch(body);

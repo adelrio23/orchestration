@@ -585,3 +585,110 @@ test('every repository is listed, with public ones shown but marked ineligible',
   // The narrower helper still returns only what can actually be authorized.
   assert.deepEqual(await privateRepositories(process.cwd(), runner), ['me/recent-private', 'me/older-private']);
 });
+
+test('project tests run locally on demand without spending the call budget', async () => {
+  const ran = [];
+  const c = fixture(async () => { throw Error('running tests must never call a model'); }, async (command, args, opts) => { ran.push({ command, cwd: opts.cwd }); return { code: 0, reason: '', output: 'ok', durationMs: 1 }; });
+  c.control('pause');
+  const outcome = await c.runProjectTests();
+  assert.equal(outcome.passed, true);
+  assert.equal(c.state.calls, 0, 'no call budget is spent');
+  assert.equal(ran.length, 1);
+  assert.equal(ran[0].cwd, c.state.repo, 'tests run against the project checkout on this machine');
+  assert.equal(c.state.localTests.passed, true);
+});
+
+test('a failing local test run is reported as failed with its output', async () => {
+  const c = fixture(async () => okay(), async () => ({ code: 1, reason: '', output: 'AssertionError: expected 2', durationMs: 1 }));
+  c.control('pause');
+  const outcome = await c.runProjectTests();
+  assert.equal(outcome.passed, false);
+  assert.match(outcome.results[0].output, /AssertionError/);
+});
+
+test('an exhausted Codex window records when it is expected back', async () => {
+  const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+  const c = fixture(async () => okay());
+  await c.monitorProviders(true, async () => ({ rateLimits: { primary: { usedPercent: 100, resetsAt } } }));
+  const codex = c.state.providers.codex;
+  assert.match(codex.blocked, /^quota/);
+  assert.equal(codex.availableAt, resetsAt * 1000, 'the reported reset time is stored, not a guess');
+  assert.match(c.availability().find(p => p.name === 'codex').availableAt, /^\d{4}-/);
+});
+
+test('recovering Codex requeues work that was only waiting for a provider', async () => {
+  const c = fixture(async () => okay());
+  c.state.providers.codex.blocked = 'quota: measured Codex limit exhausted';
+  c.state.providers.codex.availableAt = Date.now() - 1000;
+  const t = add(c); t.status = 'waiting'; t.blocked = 'No eligible independent provider available';
+  await c.monitorProviders(true, async () => ({ rateLimits: { primary: { usedPercent: 10, resetsAt: null } } }));
+  assert.equal(c.state.providers.codex.blocked, null);
+  assert.equal(c.state.providers.codex.availableAt, null);
+  assert.equal(t.status, 'queued', 'waiting work resumes automatically');
+  assert.equal(t.blocked, null);
+});
+
+test('a passed reset time restores the recovery allowance instead of giving up', async () => {
+  const c = fixture(async () => okay());
+  const kimi = c.state.providers.kimi;
+  kimi.blocked = 'quota: exhausted'; kimi.recoveryAttempts = 3; kimi.availableAt = Date.now() - 1000; kimi.nextProbe = Date.now() + 9e9;
+  const waiting = add(c); waiting.status = 'waiting'; // there is work for it to come back to
+  c.control('start');
+  await c.recoverProvider();
+  assert.equal(kimi.recoveryAttempts, 1, 'a new quota window resets the attempt count and probes again');
+  assert.equal(kimi.availableAt !== null, true);
+});
+
+// --- Autonomous continuation ------------------------------------------------
+function autoFixture(planSequence) {
+  let plans = 0;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (prompt.includes('Act as the project lead')) return okay(planSequence[Math.min(plans++, planSequence.length - 1)]);
+    if (role === 'review') return okay('Good.\nREVIEW: PASS');
+    fs.writeFileSync(path.join(cwd, 'app.txt'), `build ${Math.random()}\n`); return okay('Implemented');
+  });
+  c.state.policy.autoPlan = true;
+  return c;
+}
+async function settle(c, rounds = 40) { for (let i = 0; i < rounds; i++) { c.tick(); await new Promise(r => setTimeout(r, 12)); } }
+
+test('with autoPlan on it plans, builds and integrates repeatedly without approvals', async () => {
+  const milestone = n => planReply([{ title: `Milestone ${n}`, role: 'backend', requirements: 'Do the next valuable thing', acceptance: 'Tests pass', scope: ['app.txt'] }]);
+  const c = autoFixture([milestone(1), milestone(2), milestone(3)]);
+  await c.chat({ provider: 'codex', intent: 'plan', autoStart: true, message: 'Start.' });
+  c.control('start');
+  await settle(c);
+  assert.ok(c.state.planningRounds >= 1, 'it planned again on its own after finishing');
+  assert.ok(c.state.tasks.length >= 2, `more milestones were queued and built (${c.state.tasks.length})`);
+  assert.ok(c.state.tasks.every(t => ['integrated', 'queued', 'building', 'reviewing', 'testing', 'ready'].includes(t.status)), 'nothing is blocked awaiting a human');
+});
+
+test('an autonomous run stops itself when the lead needs an answer', async () => {
+  const c = autoFixture([planReply([], ['Which payment provider should we support?'])]);
+  c.state.tasks.push({ ...add(c), status: 'integrated' });
+  for (const t of c.state.tasks) t.status = 'integrated';
+  c.control('start');
+  await settle(c, 25);
+  assert.match(c.state.autoPlanStopped || '', /needs an answer|payment provider/i);
+  assert.equal(c.state.mode, 'paused', 'it pauses rather than looping');
+});
+
+test('an autonomous run stops at the planning round cap instead of looping forever', async () => {
+  const c = autoFixture([planReply([{ title: 'M', role: 'backend', requirements: 'r', acceptance: 'a', scope: ['app.txt'] }])]);
+  c.setLimits({ ...c.state.limits, maxPlanningRounds: 2 });
+  for (const t of c.state.tasks) t.status = 'integrated';
+  c.state.tasks.push({ ...add(c), status: 'integrated' });
+  for (const t of c.state.tasks) t.status = 'integrated';
+  c.control('start');
+  await settle(c, 60);
+  assert.ok(c.state.planningRounds <= 2, `respected the cap (${c.state.planningRounds})`);
+  if (c.state.autoPlanStopped) assert.match(c.state.autoPlanStopped, /planning round cap|call budget/);
+});
+
+test('autoPlan stays off unless it is turned on', async () => {
+  const c = fixture(async () => okay());
+  assert.equal(c.state.policy.autoPlan, false, 'autonomy is opt-in');
+  const t = add(c); t.status = 'integrated';
+  c.control('start'); await settle(c, 5);
+  assert.equal(c.state.planningRounds, 0, 'no planning happens on its own');
+});

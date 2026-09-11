@@ -46,9 +46,21 @@ Use Pause to stop new dispatch, not to suspend a process mid-write. An active ca
 - Quota/auth failures mark the provider unavailable. Eligible tasks can move to another provider with the existing worktree and a short checkpoint, within attempt limits. When no independent provider remains, work waits. Codex subscription limits are read every five minutes through its app-server without model turns. Measured exhaustion blocks dispatch; measured recovery requeues waiting work without overriding Pause or enabling disabled providers. Kimi/Claude quota recovery uses at most three small calls with 30/60/120-minute backoff while enabled and work is pending/running; calls count toward the shared budget. Their remaining percentages are unavailable. Authentication failures require manual attention. The dashboard server must remain open.
 - Interrupted/uncertain agent, chat or test termination gates all new work. Verify old processes stopped and inspect the checkpoint before confirming recovery. A stale server lock after a crash must likewise be inspected before manual removal. WSL model calls also have a Linux-side timeout; uncertain termination is not treated as a safe handoff.
 
+## Running unattended
+
+Set **Keep going without me** in the automatic action policy. The lead plans, an independent agent reviews the plan, milestones build, are reviewed and integrate, and then it plans again — with no approval from you at any step. Every safety property still holds: agents stay read-only and propose files the coordinator validates, a different provider reviews each candidate, your test commands must pass, and a rejected review starts a bounded repair round.
+
+It stops by itself, pausing and stating why, when the call budget cannot fund another round, when the planning round cap is reached (`maxPlanningRounds`, default 6), when the lead needs an answer from you, when the plan review rejects a plan, or when the lead reports no further milestones. If a provider is quota-blocked it waits rather than stopping, and resumes when the provider returns.
+
+Autonomy is opt-in and off by default.
+
+**Quota and availability.** Codex's rate limits are read every five minutes with no model turns, and the reported reset time is stored, so a blocked provider shows when it is expected back and queued work resumes automatically. Kimi and Claude report no percentage, so their return is probed with backoff; once a known reset time passes, the attempt allowance is restored rather than the provider being abandoned.
+
+**Running the tests yourself.** The Project panel runs your configured test commands on this machine against the project checkout, with no model call and no call budget, so you can confirm the commands work before agents depend on them.
+
 ## Limits
 
-Defaults: **60 total coordinator CLI attempts**, **2 attempts per task stage**, **2 repair rounds per task**, **1 concurrent task**, **100 tasks**, **40 proposed files per attempt**, **8 milestones per plan**, **5 minutes per agent call**, **1 minute per test command**, **2 MB captured output**, **40,000 characters of coordinator context**. Chat shares the call budget. CLI preflight failures consume an attempt conservatively. Limits can be adjusted only while paused and drained, within validated maximums.
+Defaults: **60 total coordinator CLI attempts**, **6 planning rounds**, **2 attempts per task stage**, **2 repair rounds per task**, **1 concurrent task**, **100 tasks**, **40 proposed files per attempt**, **8 milestones per plan**, **5 minutes per agent call**, **1 minute per test command**, **2 MB captured output**, **40,000 characters of coordinator context**. Chat shares the call budget. CLI preflight failures consume an attempt conservatively. Limits can be adjusted only while paused and drained, within validated maximums.
 
 These are coordinator-invocation limits, not a promise to meter or cap every model/tool request inside a third-party CLI. Exact provider quota balances/reset times are not universally available. Token estimates use characters/4 and exclude CLI system context and tool calls. Routing uses recorded role-specific completion/failure outcomes only; it is not model training or a quality ranking.
 
