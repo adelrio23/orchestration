@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Coordinator, git } from '../lib/core.mjs';
-import { parseResult, invocation } from '../lib/adapters.mjs';
+import { parseResult, invocation, codexSandbox } from '../lib/adapters.mjs';
 import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
@@ -1113,4 +1113,25 @@ test('changing the test command is refused while work is running or malformed', 
     assert.throws(() => c.setTestCommands({ testCommands: bad }), /test commands|Invalid test command/);
   }
   assert.deepEqual(c.state.testCommands, [[process.execPath, '--test']], 'a rejected change leaves the command alone');
+});
+
+test('the Codex sandbox is configurable and defaults to read-only', () => {
+  assert.equal(codexSandbox({}), 'read-only', 'the default is unchanged');
+  assert.equal(codexSandbox({ sandbox: 'nonsense' }), 'read-only', 'an unknown value falls back rather than widening access');
+  assert.equal(codexSandbox({ sandbox: 'workspace-write' }), 'workspace-write');
+  const args = invocation('codex', { command: 'codex', sandbox: 'workspace-write', models: {} }, 'p', 'build', '/tmp').args;
+  assert.ok(args.includes('workspace-write'), 'the chosen sandbox reaches the CLI');
+  assert.ok(!args.includes('read-only'));
+  assert.ok(invocation('codex', { command: 'codex', models: {} }, 'p', 'build', '/tmp').args.includes('read-only'), 'unconfigured stays read-only');
+});
+
+test('only Codex takes a sandbox setting, and only a valid one', () => {
+  const c = fixture(async () => okay());
+  c.control('pause');
+  c.setModels({ provider: 'codex', build: 'gpt-6-astra', review: 'gpt-6-astra', sandbox: 'workspace-write' });
+  assert.equal(c.state.adapters.codex.sandbox, 'workspace-write');
+  assert.throws(() => c.setModels({ provider: 'codex', build: 'gpt-6-astra', review: 'gpt-6-astra', sandbox: 'anything-goes' }), /Invalid Codex sandbox/);
+  assert.equal(c.state.adapters.codex.sandbox, 'workspace-write', 'a rejected value leaves the setting alone');
+  c.setModels({ provider: 'kimi', build: 'kimi-code/kimi-for-coding', review: 'kimi-code/kimi-for-coding', sandbox: 'danger-full-access' });
+  assert.equal(c.state.adapters.kimi.sandbox, undefined, 'other providers are unaffected');
 });
