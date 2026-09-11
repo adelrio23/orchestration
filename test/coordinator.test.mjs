@@ -85,9 +85,14 @@ test('tests mutating existing candidate invalidate tested content', async () => 
   const c = fixture(async (p, cfg, prompt, role, cwd) => { fs.writeFileSync(path.join(cwd, 'app.txt'), 'new'); return okay(); }, async (cmd, args, { cwd }) => { fs.writeFileSync(path.join(cwd, 'app.txt'), 'unverified mutation'); return { code: 0, output: '', reason: '' }; });
   const t = add(c); c.control('start'); await stage(c); assert.equal(t.status, 'blocked'); assert.match(t.blocked, /changed candidate/); assert.equal(t.commit, undefined);
 });
-test('failed tests block review and preserve work', async () => {
+test('failed tests never reach review, and the work is preserved for the repair', async () => {
   const c = fixture(async (p, cfg, prompt, role, cwd) => { fs.writeFileSync(path.join(cwd, 'app.txt'), 'new'); return okay(); }, async () => ({ code: 1, output: 'assertion failed', reason: '' }));
-  const t = add(c); c.control('start'); await stage(c); assert.equal(t.status, 'blocked'); assert.equal(c.state.calls, 1); assert.equal(t.tests.passed, false);
+  const t = add(c); c.control('start'); await stage(c);
+  assert.equal(t.tests.passed, false);
+  assert.equal(t.stage, 'build', 'it does not advance to review on a failing test');
+  assert.equal(t.review, undefined, 'no reviewer was spent on failing work');
+  assert.equal(c.state.calls, 1, 'exactly the one build call was spent');
+  assert.ok(fs.existsSync(path.join(t.worktree, 'app.txt')), 'the candidate is preserved for the next attempt');
 });
 test('review failure cannot integrate', async () => {
   const c = fixture(async (p, cfg, prompt, role, cwd) => { if (role === 'build') fs.writeFileSync(path.join(cwd, 'app.txt'), 'new'); return okay(role === 'review' ? 'Bug found.\nREVIEW: FAIL' : 'done'); });
@@ -1049,4 +1054,40 @@ test('every agent starts enabled; availability comes from the live check, not a 
   }
   // Three agents means a build, an independent review and a three-way vote.
   assert.equal(Object.values(c.state.providers).filter(p => p.enabled && !p.blocked).length, 3);
+});
+
+test('failing tests send the build back with the failure output, not to a dead end', async () => {
+  let builds = 0, seen = null;
+  const c = fixture(
+    async (provider, config, prompt, role, cwd) => {
+      if (role === 'review') return okay('Good.\nREVIEW: PASS');
+      seen = contextOf(prompt); builds++;
+      fs.writeFileSync(path.join(cwd, 'app.txt'), `attempt ${builds}\n`); return okay('Implemented');
+    },
+    async () => builds === 1
+      ? { code: 1, reason: '', output: 'FAIL test_scene_query: expected 3 results, got 0', durationMs: 1 }
+      : { code: 0, reason: '', output: 'ok', durationMs: 1 }
+  );
+  const t = add(c); c.control('start');
+  await stage(c);
+  assert.equal(t.status, 'queued', 'the task is handed back to the builder');
+  assert.equal(t.repairs, 1);
+  assert.equal(t.blocked, null, 'it is not blocked');
+  await stage(c);
+  assert.equal(seen.failingTestsToAddress.length, 1, 'the second attempt was told what failed');
+  assert.match(seen.failingTestsToAddress[0].output, /expected 3 results, got 0/);
+  assert.equal(seen.failingTestsToAddress[0].exitCode, 1);
+  assert.equal(t.stage, 'review', 'the repaired build passed and moved on');
+});
+
+test('tests that keep failing stop after the repair rounds are spent', async () => {
+  const c = fixture(
+    async (provider, config, prompt, role, cwd) => { fs.writeFileSync(path.join(cwd, 'app.txt'), `x${Math.random()}\n`); return okay('Implemented'); },
+    async () => ({ code: 1, reason: '', output: 'still failing', durationMs: 1 })
+  );
+  c.setLimits({ ...c.state.limits, maxRepairRounds: 2 });
+  const t = add(c); c.control('start');
+  for (let i = 0; i < 8 && t.status !== 'blocked'; i++) await stage(c);
+  assert.equal(t.status, 'blocked');
+  assert.match(t.blocked, /Tests still failing after 2 repair round/);
 });
