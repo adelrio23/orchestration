@@ -6,7 +6,7 @@ A local dashboard coordinating installed Codex, Claude Code and Kimi Code CLIs. 
 
 Requirements: Node.js 22+, Git, the relevant logged-in agent CLIs. On this Windows installation Claude and GitHub CLI run through WSL. Keep these installations and logins working outside the coordinator first.
 
-Double-click `start.cmd`, or run `node server.mjs` from this folder. Open **http://127.0.0.1:4317/**. It starts paused. `Ctrl+C` pauses dispatch, drains active bounded calls and shuts down. Do not run two servers against the same data directory.
+Double-click `start.cmd`, or run `node server.mjs` from this folder. It opens **http://127.0.0.1:4317/** in your browser by itself; set `COORDINATOR_NO_OPEN=1` if you would rather it did not, and the address is printed either way. It starts paused. `Ctrl+C` pauses dispatch, drains active bounded calls and shuts down. Do not run two servers against the same data directory.
 
 For another project, use another data directory and port, e.g. in PowerShell:
 

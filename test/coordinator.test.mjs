@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Coordinator, git } from '../lib/core.mjs';
 import { parseResult, invocation } from '../lib/adapters.mjs';
 import { run, safeEnv, redact } from '../lib/process.mjs';
-import { createServer } from '../server.mjs';
+import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
@@ -691,4 +691,21 @@ test('autoPlan stays off unless it is turned on', async () => {
   const t = add(c); t.status = 'integrated';
   c.control('start'); await settle(c, 5);
   assert.equal(c.state.planningRounds, 0, 'no planning happens on its own');
+});
+
+test('the dashboard is opened with the platform browser command, and never crashes the server', () => {
+  const calls = [];
+  const spawner = (command, args) => { calls.push({ command, args }); return { on() {}, unref() {} }; };
+  assert.equal(openDashboard('http://127.0.0.1:4317', spawner), true);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].args.includes('http://127.0.0.1:4317'), 'the dashboard URL is passed through');
+  const expected = { win32: 'cmd', darwin: 'open' }[process.platform] || 'xdg-open';
+  assert.equal(calls[0].command, expected);
+
+  // A machine with no opener must not take the server down with it.
+  assert.equal(openDashboard('http://127.0.0.1:4317', () => { throw Error('no browser here'); }), false);
+
+  process.env.COORDINATOR_NO_OPEN = '1';
+  try { assert.equal(openDashboard('http://127.0.0.1:4317', spawner), false, 'opt-out is honoured'); assert.equal(calls.length, 1); }
+  finally { delete process.env.COORDINATOR_NO_OPEN; }
 });

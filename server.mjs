@@ -1,6 +1,7 @@
 import { checkCompatibility } from './lib/compatibility.mjs';
 import { projectChoices, browseFolders } from './lib/project-picker.mjs';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -64,6 +65,21 @@ export function createServer(engine) {
 }
 function serverAddress(res) { return `127.0.0.1:${res.socket.localPort}`; }
 
+// Opens the dashboard in the default browser. Best effort: a failure here must
+// never stop the server, and COORDINATOR_NO_OPEN=1 turns it off.
+export function openDashboard(url, spawner = spawn) {
+  if (process.env.COORDINATOR_NO_OPEN === '1') return false;
+  const [command, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : process.platform === 'darwin' ? ['open', [url]]
+    : ['xdg-open', [url]];
+  try {
+    const child = spawner(command, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    child.on?.('error', () => {});
+    child.unref?.();
+    return true;
+  } catch { return false; }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const dir = path.resolve(process.env.COORDINATOR_DATA || fileURLToPath(new URL('./data', import.meta.url)));
   fs.mkdirSync(dir, { recursive: true });
@@ -86,7 +102,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const engine = new Coordinator(dir); server = createServer(engine);
     const timer = setInterval(() => { engine.monitorProviders().catch(()=>{}); engine.recoverProvider().catch(()=>{}); engine.tick(); }, 1000);
-    server.listen(Number(process.env.PORT || 4317), '127.0.0.1', () => console.log(`Local coordinator: http://127.0.0.1:${server.address().port} (paused)`));
+    server.listen(Number(process.env.PORT || 4317), '127.0.0.1', () => {
+      const url = `http://127.0.0.1:${server.address().port}`;
+      console.log(`Local coordinator: ${url} (paused)`);
+      console.log(openDashboard(url) ? 'Opening it in your browser. Keep this window open; press Ctrl+C to stop.' : `Open ${url} in your browser. Keep this window open; press Ctrl+C to stop.`);
+    });
     server.on('error', error => { console.error(error.message); clearInterval(timer); fs.unlinkSync(lock); process.exitCode = 1; });
     let closing = false;
     const close = () => {
