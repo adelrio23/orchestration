@@ -987,3 +987,20 @@ test('the watchdog leaves a call that is merely slow alone', async () => {
   assert.equal(t.stuckStops, undefined, 'a slow call is not disturbed');
   await drain(c);
 });
+
+test('refusing a dirty repository names the files that are in the way', () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'dirty-')), repo = path.join(dir, 'repo');
+  fs.mkdirSync(repo); git(repo, 'init');
+  fs.writeFileSync(path.join(repo, 'committed.txt'), 'x\n'); git(repo, 'add', '.');
+  git(repo, '-c', 'user.name=T', '-c', 'user.email=t@l', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initial');
+  fs.writeFileSync(path.join(repo, 'committed.txt'), 'changed\n');
+  fs.writeFileSync(path.join(repo, 'scratch.log'), 'junk\n');
+  const c = new Coordinator(path.join(dir, 'state'), { executor: async () => okay() });
+  assert.throws(() => c.configure({ repo, requirements: 'x', testCommands: [['node', '--version']] }), err => {
+    assert.match(err.message, /2 uncommitted change/);
+    assert.match(err.message, /committed\.txt/);
+    assert.match(err.message, /scratch\.log/);
+    assert.match(err.message, /Commit or stash/);
+    return true;
+  });
+});
