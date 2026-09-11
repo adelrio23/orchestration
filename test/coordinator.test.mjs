@@ -1135,3 +1135,47 @@ test('only Codex takes a sandbox setting, and only a valid one', () => {
   c.setModels({ provider: 'kimi', build: 'kimi-code/kimi-for-coding', review: 'kimi-code/kimi-for-coding', sandbox: 'danger-full-access' });
   assert.equal(c.state.adapters.kimi.sandbox, undefined, 'other providers are unaffected');
 });
+
+test('the fast command runs every build; the full suite runs once per merge', async () => {
+  const ran = [];
+  const c = fixture(
+    async (provider, config, prompt, role, cwd) => { if (role === 'build') fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay(role === 'review' ? 'Good.\nREVIEW: PASS' : 'Implemented'); },
+    async (command, args) => { ran.push([command, ...args].join(' ')); return { code: 0, reason: '', output: 'ok', durationMs: 1 }; }
+  );
+  c.setTestCommands({ testCommands: [['fast', 'unit']], integrationTestCommands: [['slow', 'everything']] });
+  const t = add(c); c.control('start'); await stage(c); await stage(c);
+  assert.deepEqual(ran, ['fast unit'], 'only the fast command gates the build');
+  c.control('pause'); await c.integrate(t.id);
+  assert.deepEqual(ran, ['fast unit', 'slow everything'], 'the full suite runs at the merge');
+});
+
+test('without a separate full suite the same command is used for both', async () => {
+  const ran = [];
+  const c = fixture(
+    async (provider, config, prompt, role, cwd) => { if (role === 'build') fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay(role === 'review' ? 'Good.\nREVIEW: PASS' : 'Implemented'); },
+    async (command, args) => { ran.push([command, ...args].join(' ')); return { code: 0, reason: '', output: 'ok', durationMs: 1 }; }
+  );
+  c.setTestCommands({ testCommands: [['only', 'suite']] });
+  assert.ok(!c.state.integrationTestCommands, 'no separate full suite is configured');
+  const t = add(c); c.control('start'); await stage(c); await stage(c);
+  c.control('pause'); await c.integrate(t.id);
+  assert.deepEqual(ran, ['only suite', 'only suite']);
+});
+
+test('a slow suite is allowed a realistic timeout', () => {
+  const c = fixture(async () => okay());
+  c.control('pause');
+  c.setLimits({ ...c.state.limits, testTimeoutMs: 1800000 }); // a 30-minute suite
+  assert.equal(c.state.limits.testTimeoutMs, 1800000);
+  assert.throws(() => c.setLimits({ ...c.state.limits, testTimeoutMs: 5400001 }), /Invalid limit/);
+});
+
+test('a long brief is accepted rather than truncated at four thousand characters', async () => {
+  const c = fixture(async () => okay('ack'));
+  c.control('pause');
+  const brief = 'Fix the scene queries. '.repeat(700); // ~16k characters, well past the old cap
+  assert.ok(brief.length > 4000 && brief.length < 20000);
+  const record = await c.chat({ provider: 'codex', message: brief });
+  assert.equal(record.status, 'ok', 'a long brief is accepted');
+  await assert.rejects(() => c.chat({ provider: 'codex', message: 'x'.repeat(20001) }), /at most/);
+});
