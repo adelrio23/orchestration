@@ -8,7 +8,7 @@ import { parseResult, invocation } from '../lib/adapters.mjs';
 import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
-import { setupStatus, privateRepositories, githubReadiness } from '../lib/setup.mjs';
+import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
@@ -568,4 +568,20 @@ test('malformed research output is rejected rather than half-trusted', () => {
   assert.throws(() => parseFindings('<coordinator-research>{"findings":[{"claim":"x","url":"https://e.com"}]}</coordinator-research>'), /verbatim quote/);
   const ok = parseFindings('<coordinator-research>{"findings":[{"claim":"x","url":"https://e.com","quote":"y"}]}</coordinator-research>');
   assert.deepEqual(ok, [{ claim: 'x', url: 'https://e.com', quote: 'y' }]);
+});
+
+test('every repository is listed, with public ones shown but marked ineligible', async () => {
+  const runner = async () => ({ code: 0, reason: '', durationMs: 1, output: JSON.stringify([
+    { nameWithOwner: 'me/public-site', isPrivate: false, updatedAt: '2026-09-01T00:00:00Z' },
+    { nameWithOwner: 'me/older-private', isPrivate: true, updatedAt: '2026-01-01T00:00:00Z' },
+    { nameWithOwner: 'me/recent-private', isPrivate: true, updatedAt: '2026-09-10T00:00:00Z' }
+  ]) });
+  const repos = await listRepositories(process.cwd(), runner);
+  assert.equal(repos.length, 3, 'nothing is hidden from the list');
+  assert.deepEqual(repos.map(r => r.name), ['me/recent-private', 'me/older-private', 'me/public-site'], 'usable and most recent first');
+  assert.equal(repos[2].eligible, false);
+  assert.match(repos[2].reason, /only pushes to a private repository/);
+  assert.equal(repos[0].reason, null);
+  // The narrower helper still returns only what can actually be authorized.
+  assert.deepEqual(await privateRepositories(process.cwd(), runner), ['me/recent-private', 'me/older-private']);
 });
