@@ -1091,3 +1091,26 @@ test('tests that keep failing stop after the repair rounds are spent', async () 
   assert.equal(t.status, 'blocked');
   assert.match(t.blocked, /Tests still failing after 2 repair round/);
 });
+
+test('the test command can be corrected after milestones are queued', async () => {
+  const c = fixture(async () => okay());
+  add(c); add(c);
+  assert.ok(c.state.tasks.length, 'work is queued, so configure() would refuse');
+  assert.throws(() => c.configure({ repo: c.state.repo, requirements: 'x', testCommands: [['python', '-m', 'pytest']] }), /fresh workspace/);
+
+  const updated = c.setTestCommands({ testCommands: [['python', '-m', 'tests.offline', 'discover', '-s', 'tests', '-t', '.']] });
+  assert.deepEqual(updated.testCommands, [['python', '-m', 'tests.offline', 'discover', '-s', 'tests', '-t', '.']]);
+  assert.deepEqual(c.state.testCommands, updated.testCommands, 'the queued work now runs the corrected command');
+  assert.ok(c.state.events.some(e => e.type === 'test_commands_changed'), 'the change is recorded');
+});
+
+test('changing the test command is refused while work is running or malformed', async () => {
+  const c = fixture(async () => okay());
+  c.control('start');
+  assert.throws(() => c.setTestCommands({ testCommands: [['python']] }), /Pause and let active work finish/);
+  c.control('pause');
+  for (const bad of [[], [[]], [['ok'], ['a'], ['b'], ['c'], ['d'], ['e']], ['not-an-array'], [[123]]]) {
+    assert.throws(() => c.setTestCommands({ testCommands: bad }), /test commands|Invalid test command/);
+  }
+  assert.deepEqual(c.state.testCommands, [[process.execPath, '--test']], 'a rejected change leaves the command alone');
+});
