@@ -791,3 +791,36 @@ test('completion is not declared when there is no budget to ask', async () => {
   await c.settleCompletion();
   assert.match(c.state.autoPlanStopped, /not enough budget or enough available agents/);
 });
+
+test('every agent is told what budget is left and how milestones consume it', async () => {
+  const prompts = {};
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    prompts[role] = prompt;
+    if (prompt.includes('Act as the project lead')) return okay(planReply());
+    if (role === 'review') return okay('Good.\nREVIEW: PASS');
+    fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay('Implemented');
+  });
+  c.control('pause');
+  await c.chat({ provider: 'codex', intent: 'plan', autoStart: false, message: 'Plan it.' });
+  assert.match(prompts.review, /callsRemaining/, 'the lead is told what is left');
+  assert.match(prompts.review, /prefer fewer higher-value milestones/, 'and how to spend it');
+  assert.match(prompts.review, /eachMilestoneCosts/, 'and what a milestone costs');
+
+  const t = add(c); c.control('start'); await stage(c);
+  const context = contextOf(prompts.build);
+  assert.equal(context.budget.callsTotal, c.state.limits.maxCalls);
+  assert.equal(typeof context.budget.callsRemaining, 'number');
+  assert.ok(context.budget.callsRemaining < c.state.limits.maxCalls, 'spent calls are reflected');
+});
+
+test('the budget brief reports measured subscription usage when a provider gives it', async () => {
+  const c = fixture(async () => okay());
+  await c.monitorProviders(true, async () => ({ rateLimits: { primary: { usedPercent: 75, resetsAt: Math.floor(Date.now() / 1000) + 600 } } }));
+  const brief = c.budgetBrief();
+  assert.ok(Array.isArray(brief.subscriptionUsage), 'measured windows are passed through');
+  assert.equal(brief.subscriptionUsage[0].remainingPercent, 25);
+  assert.match(brief.subscriptionUsage[0].resetsAt, /^\d{4}-/);
+
+  const fresh = fixture(async () => okay());
+  assert.equal(fresh.budgetBrief().subscriptionUsage, 'Not reported by these providers', 'unmeasured usage is never reported as zero');
+});
