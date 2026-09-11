@@ -10,6 +10,7 @@ import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
 import { launchAutonomous } from '../lib/autostart.mjs';
+import { projectChoices } from '../lib/project-picker.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
@@ -877,4 +878,21 @@ test('launching refuses to start with only one agent rather than skipping review
   const c = launchEngine(leadExecutor);
   c.provider('kimi', false);
   await assert.rejects(() => launchAutonomous(c, { name: 'my-app', requirements: 'Build it', github: false }), /Two signed-in agents are required/);
+});
+
+test('the project picker finds repositories in the home folder and common project directories', () => {
+  const home = fs.mkdtempSync(path.join(fixtures, 'home-'));
+  const make = dir => { fs.mkdirSync(dir, { recursive: true }); git(dir, 'init'); return path.resolve(dir); };
+  const inHome = make(path.join(home, 'ytfactory'));                      // straight in the home folder
+  const inDocuments = make(path.join(home, 'Documents', 'side-project'));
+  const inOneDrive = make(path.join(home, 'OneDrive', 'Desktop', 'redirected'));
+  fs.mkdirSync(path.join(home, 'not-a-repo'), { recursive: true });        // no .git
+
+  const realHome = os.homedir;
+  os.homedir = () => home;
+  try {
+    const found = projectChoices({ dir: fs.mkdtempSync(path.join(fixtures, 'state-')), state: { repo: null } }).map(p => p.path);
+    for (const expected of [inHome, inDocuments, inOneDrive]) assert.ok(found.includes(expected), `found ${expected}`);
+    assert.ok(!found.some(p => p.endsWith('not-a-repo')), 'a plain folder is not offered as a repository');
+  } finally { os.homedir = realHome; }
 });
