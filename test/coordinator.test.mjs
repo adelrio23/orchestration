@@ -709,3 +709,85 @@ test('the dashboard is opened with the platform browser command, and never crash
   try { assert.equal(openDashboard('http://127.0.0.1:4317', spawner), false, 'opt-out is honoured'); assert.equal(calls.length, 1); }
   finally { delete process.env.COORDINATOR_NO_OPEN; }
 });
+
+test('Claude is invoked by its resolved WSL path, not a bare name off a shell-less PATH', () => {
+  const config = { command: 'wsl.exe', wsl: true, exe: '/home/u/.npm-global/bin/claude', models: { build: 'sonnet' } };
+  const build = invocation('claude', config, 'prompt', 'build', 'C:\\work\\repo');
+  assert.ok(build.args.includes('/home/u/.npm-global/bin/claude'), 'the resolved path is used');
+  assert.ok(!build.args.includes('claude'), 'the bare name is not used');
+  // --exec is kept, so no argument is ever handed to a shell.
+  assert.ok(build.args.includes('--exec'));
+  assert.ok(build.args.includes('/mnt/c/work/repo'), 'the Windows path is translated for WSL');
+  // Without a resolved path it still falls back rather than breaking.
+  assert.ok(invocation('claude', { command: 'wsl.exe', wsl: true, models: {} }, 'p', 'build', 'C:\\x').args.includes('claude'));
+});
+
+test('adapter locations are re-detected on load rather than trusted from saved state', () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'adapters-'));
+  const first = new Coordinator(dir, { executor: async () => okay() });
+  first.state.adapters.claude.command = 'C:/stale/path/wsl.exe';
+  first.state.adapters.claude.exe = '/gone/claude';
+  first.save();
+  const reloaded = new Coordinator(dir, { executor: async () => okay() });
+  assert.notEqual(reloaded.state.adapters.claude.command, 'C:/stale/path/wsl.exe', 'a stale command is replaced');
+  assert.notEqual(reloaded.state.adapters.claude.exe, '/gone/claude', 'a stale executable path is replaced');
+  assert.ok(reloaded.state.adapters.claude.models.build, 'model choices are preserved across the refresh');
+});
+
+// --- Unanimous completion ---------------------------------------------------
+function consensusFixture(verdictsByRound) {
+  let round = 0, plansIssued = 0;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (prompt.includes('Judge whether this project now fully meets')) {
+      const verdicts = verdictsByRound[Math.min(round, verdictsByRound.length - 1)];
+      const verdict = verdicts[provider];
+      if (provider === Object.keys(verdicts).at(-1)) round++;
+      return okay(verdict ? 'Looks done.\nVERDICT: COMPLETE' : 'Missing password reset and error handling.\nVERDICT: INCOMPLETE');
+    }
+    if (prompt.includes('Act as the project lead')) { plansIssued++; return okay(planReply([])); }
+    if (role === 'review') return okay('Good.\nREVIEW: PASS');
+    fs.writeFileSync(path.join(cwd, 'app.txt'), `b${Math.random()}\n`); return okay('Implemented');
+  });
+  c.state.policy.autoPlan = true;
+  return c;
+}
+
+test('a single dissenting agent keeps the run going and records what is missing', async () => {
+  const c = consensusFixture([{ codex: true, kimi: false }]);
+  const t = add(c); t.status = 'integrated';
+  await c.settleCompletion();
+  assert.equal(c.state.consensus.complete, false);
+  assert.deepEqual(c.state.consensus.dissenting, ['kimi']);
+  assert.equal(c.state.autoPlanStopped, null, 'the run is not stopped by a dissent');
+  assert.match(c.state.decisions.at(-1).text, /Completion review found remaining gaps/);
+  assert.match(c.state.decisions.at(-1).text, /password reset/, 'the specific gap is carried forward');
+  assert.ok(c.state.decisions.at(-1).text.length <= 2000, 'the recorded decision fits the field');
+});
+
+test('the run ends only when every available agent agrees', async () => {
+  const c = consensusFixture([{ codex: true, kimi: true }]);
+  const t = add(c); t.status = 'integrated';
+  await c.settleCompletion();
+  assert.equal(c.state.consensus.complete, true);
+  assert.deepEqual(c.state.consensus.agreed.sort(), ['codex', 'kimi']);
+  assert.match(c.state.autoPlanStopped, /All agents agree the goal is met/);
+  assert.equal(c.state.mode, 'paused');
+});
+
+test('completion needs a real verdict line, not an agent merely sounding positive', async () => {
+  const c = fixture(async () => okay('This looks great to me, excellent work, ship it.'));
+  c.state.policy.autoPlan = true;
+  const t = add(c); t.status = 'integrated';
+  const consensus = await c.consensusComplete();
+  assert.equal(consensus.complete, false, 'praise without VERDICT: COMPLETE is not agreement');
+  assert.equal(consensus.agreed.length, 0);
+});
+
+test('completion is not declared when there is no budget to ask', async () => {
+  const c = consensusFixture([{ codex: true, kimi: true }]);
+  c.setLimits({ ...c.state.limits, maxCalls: 1 });
+  const t = add(c); t.status = 'integrated';
+  assert.equal(await c.consensusComplete(), null, 'it declines rather than assuming completion');
+  await c.settleCompletion();
+  assert.match(c.state.autoPlanStopped, /not enough budget or enough available agents/);
+});

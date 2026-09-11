@@ -50,6 +50,8 @@ Use Pause to stop new dispatch, not to suspend a process mid-write. An active ca
 
 Set **Keep going without me** in the automatic action policy. The lead plans, an independent agent reviews the plan, milestones build, are reviewed and integrate, and then it plans again — with no approval from you at any step. Every safety property still holds: agents stay read-only and propose files the coordinator validates, a different provider reviews each candidate, your test commands must pass, and a rejected review starts a bounded repair round.
 
+When the lead reports no further milestones, the run is not over: every available agent is asked independently whether the project actually meets its goal and must end with `VERDICT: COMPLETE`. Agreement must be unanimous, and praise without that line does not count. One dissent records what that agent says is missing as a project decision, and the next planning round must address it. Completion is never assumed when there is not enough budget or too few agents to ask.
+
 It stops by itself, pausing and stating why, when the call budget cannot fund another round, when the planning round cap is reached (`maxPlanningRounds`, default 6), when the lead needs an answer from you, when the plan review rejects a plan, or when the lead reports no further milestones. If a provider is quota-blocked it waits rather than stopping, and resumes when the provider returns.
 
 Autonomy is opt-in and off by default.
