@@ -20,6 +20,7 @@ function fixture(executor, testRunner) {
   c.configure({ repo, requirements: 'A useful app', testCommands: [[process.execPath, '--test']] }); return c;
 }
 function add(c, extra = {}) { return c.addTask({ title: 'Implement app', requirements: 'Update app', acceptance: 'App has new content', scope: ['app.txt'], ...extra }); }
+function contextOf(prompt) { return JSON.parse(prompt.slice(prompt.indexOf('CONTEXT\n') + 8).split('\nReturn complete UTF-8')[0]); }
 function okay(text = 'Implemented') { return { status: 'ok', text, usage: { source: 'unavailable', values: null }, durationMs: 1 }; }
 async function drain(c) { for (let i = 0; i < 500 && c.running.size; i++) await new Promise(r => setTimeout(r, 10)); assert.equal(c.running.size, 0, 'work drained'); }
 async function stage(c) { c.tick(); await drain(c); }
@@ -354,4 +355,79 @@ test('the GitHub sign-in report names the account', async () => {
   const status = await githubReadiness(process.cwd(), runner);
   assert.equal(status.ready, true);
   assert.equal(status.user, 'adelrio23');
+});
+
+test('a failed review returns the task to the builder with the findings, then integrates once fixed', async () => {
+  const seen = [];
+  let reviews = 0;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (role === 'build') { seen.push(contextOf(prompt)); fs.writeFileSync(path.join(cwd, 'app.txt'), `round ${seen.length}\n`); return okay('Implemented'); }
+    reviews++;
+    return okay(reviews === 1 ? 'Missing error handling on the empty input path.\nREVIEW: FAIL' : 'All criteria met.\nREVIEW: PASS');
+  });
+  const t = add(c); c.control('start');
+  await stage(c); await stage(c); // build, failing review
+  assert.equal(t.repairs, 1, 'one repair round was started');
+  assert.equal(t.stage, 'build', 'the task went back to the builder');
+  assert.equal(t.status, 'queued');
+  await stage(c); await stage(c); // repair build, passing review
+  assert.equal(t.status, 'ready');
+  assert.equal(t.review.passed, true);
+  // The second build brief carried the reviewer's concrete findings.
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].reviewFindingsToAddress, null);
+  assert.match(seen[1].reviewFindingsToAddress, /Missing error handling/);
+  assert.deepEqual(seen[1].repairRound, { round: 1, of: 2 });
+});
+
+test('repair rounds are bounded and then stop for inspection', async () => {
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (role === 'build') { fs.writeFileSync(path.join(cwd, 'app.txt'), `attempt ${Math.random()}\n`); return okay('Implemented'); }
+    return okay('Still wrong.\nREVIEW: FAIL');
+  });
+  c.setLimits({ ...c.state.limits, maxRepairRounds: 1 });
+  const t = add(c); c.control('start');
+  for (let i = 0; i < 6 && t.status !== 'blocked'; i++) await stage(c);
+  assert.equal(t.repairs, 1, 'stopped at the configured round limit');
+  assert.equal(t.status, 'blocked');
+  assert.match(t.blocked, /after 1 repair round/);
+});
+
+test('a repair round is refused when the call budget cannot fund it', async () => {
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (role === 'build') { fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay('Implemented'); }
+    return okay('Not good enough.\nREVIEW: FAIL');
+  });
+  c.setLimits({ ...c.state.limits, maxCalls: 2 }); // exactly one build + one review
+  const t = add(c); c.control('start');
+  await stage(c); await stage(c);
+  assert.equal(t.repairs || 0, 0, 'no repair round was started');
+  assert.equal(t.status, 'blocked');
+  assert.match(t.blocked, /call budget/);
+});
+
+test('builders see recent handoffs and the remaining budget', async () => {
+  let context;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (role === 'build') { context = contextOf(prompt); fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay('Implemented'); }
+    return okay('All criteria met.\nREVIEW: PASS');
+  });
+  const t = add(c); c.control('start'); await stage(c);
+  assert.ok(Array.isArray(context.handoffs), 'the full recent handoff chain is supplied');
+  assert.equal(context.budget.callsRemaining, c.state.limits.maxCalls - 1);
+  assert.equal(context.budget.maxFilesPerAttempt, c.state.limits.maxFiles);
+});
+
+test('the file-proposal cap follows the configured limit', async () => {
+  const files = n => '<coordinator-files>' + JSON.stringify({ files: Array.from({ length: n }, (_, i) => ({ path: `src/f${i}.txt`, content: 'x' })) }) + '</coordinator-files>';
+  const c = fixture(async (provider, config, prompt, role, cwd) => role === 'build' ? okay(files(12)) : okay('REVIEW: PASS'));
+  c.setLimits({ ...c.state.limits, maxFiles: 40 });
+  const t = add(c, { scope: ['src/'] }); c.control('start'); await stage(c);
+  assert.equal(t.stage, 'review', 'twelve files are accepted under a cap of forty');
+
+  const c2 = fixture(async (provider, config, prompt, role, cwd) => role === 'build' ? okay(files(12)) : okay('REVIEW: PASS'));
+  c2.setLimits({ ...c2.state.limits, maxFiles: 5 });
+  const t2 = add(c2, { scope: ['src/'] }); c2.control('start'); await stage(c2);
+  assert.equal(t2.status, 'blocked');
+  assert.match(t2.blocked, /at most 5/);
 });
