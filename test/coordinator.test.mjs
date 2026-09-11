@@ -9,6 +9,7 @@ import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
+import { launchAutonomous } from '../lib/autostart.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
@@ -823,4 +824,57 @@ test('the budget brief reports measured subscription usage when a provider gives
 
   const fresh = fixture(async () => okay());
   assert.equal(fresh.budgetBrief().subscriptionUsage, 'Not reported by these providers', 'unmeasured usage is never reported as zero');
+});
+
+// --- One-button launch ------------------------------------------------------
+function launchEngine(executor) {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'launch-'));
+  return new Coordinator(path.join(dir, 'state'), { executor, testRunner: async () => ({ code: 0, reason: '', output: 'ok', durationMs: 1 }) });
+}
+const leadExecutor = async (provider, config, prompt) => prompt.includes('Act as the project lead') ? okay(planReply()) : okay('Good.\nREVIEW: PASS');
+
+test('launching sets up the project, GitHub and every automatic policy with no approvals', async () => {
+  const c = launchEngine(leadExecutor);
+  const authorized = [];
+  const result = await launchAutonomous(c, { name: 'my-app', requirements: 'Build something valuable' }, {
+    readiness: async () => ({ ready: true, user: 'adelrio23', detail: 'Signed in as adelrio23.' }),
+    repositories: async () => [{ name: 'adelrio23/other', isPrivate: true, eligible: true }],
+    target: async (engine, options) => { authorized.push(options); engine.state.github = { name: options.name, branch: 'coordinator/x/integration', authorized: true }; return engine.state.github; }
+  });
+  assert.ok(c.state.repo, 'the project repository exists');
+  assert.deepEqual(authorized, [{ name: 'adelrio23/my-app', create: true, authorizeAutoPush: true }], 'a private repository is created and push authorized');
+  assert.equal(c.state.policy.autoIntegrate, true);
+  assert.equal(c.state.policy.autoPush, true);
+  assert.equal(c.state.policy.autoPlan, true);
+  assert.equal(result.pushing, true);
+  assert.equal(c.state.mode, 'running', 'it is already working');
+});
+
+test('launching connects to an existing private repository instead of trying to create it', async () => {
+  const c = launchEngine(leadExecutor);
+  const authorized = [];
+  await launchAutonomous(c, { name: 'my-app', requirements: 'Build it' }, {
+    readiness: async () => ({ ready: true, user: 'adelrio23' }),
+    repositories: async () => [{ name: 'adelrio23/my-app', isPrivate: true, eligible: true }],
+    target: async (engine, options) => { authorized.push(options); engine.state.github = { name: options.name, branch: 'b', authorized: true }; return engine.state.github; }
+  });
+  assert.equal(authorized[0].create, false, 'an existing repository is connected, not recreated');
+});
+
+test('a GitHub problem does not stop the run; it continues locally and says so', async () => {
+  const c = launchEngine(leadExecutor);
+  const result = await launchAutonomous(c, { name: 'my-app', requirements: 'Build it' }, {
+    readiness: async () => ({ ready: false, user: null, detail: 'GitHub CLI is not installed or not signed in.' }),
+    repositories: async () => [], target: async () => { throw Error('should not be reached'); }
+  });
+  assert.equal(result.pushing, false);
+  assert.equal(c.state.policy.autoPlan, true, 'the autonomous run still starts');
+  assert.equal(c.state.mode, 'running');
+  assert.ok(result.notes.some(n => /Continuing without GitHub/.test(n)), 'the reason is reported, not hidden');
+});
+
+test('launching refuses to start with only one agent rather than skipping review', async () => {
+  const c = launchEngine(leadExecutor);
+  c.provider('kimi', false);
+  await assert.rejects(() => launchAutonomous(c, { name: 'my-app', requirements: 'Build it', github: false }), /Two signed-in agents are required/);
 });

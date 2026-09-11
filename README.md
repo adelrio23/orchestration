@@ -18,6 +18,12 @@ node server.mjs
 
 Each dashboard controls one repository. The default state directory is `data/` beside this README. A second project gets a separate state directory. Do not delete state/worktrees to clear a failed task: inspect the preserved checkpoint first.
 
+## Just build it
+
+**Build it — no approvals** on the Project panel is the whole setup in one action: it creates the project repository, creates or connects a private GitHub repository and authorizes pushing, turns on automatic integration, pushing and continuous planning, then plans and starts. Nothing is approved by you after that.
+
+If GitHub is unavailable — not signed in, or the name already exists as a public repository — it says so in the report and runs locally rather than stopping; work still builds, tests and integrates, and pushing can be authorized later. It refuses only when fewer than two agents are signed in, because one agent cannot review its own work.
+
 ## Use the dashboard
 
 1. **Project:** choose **New project** to create and configure a local Git repository in one step, or **Existing repository** to use a clean repository with an initial commit. Enter the goal. The default test command expects Node tests in `test/*.test.mjs`; change it for your stack. Only use trusted test commands. The picker includes local repositories and linked Git worktrees, including projects outside common folders. Selecting a folder does not start agents.

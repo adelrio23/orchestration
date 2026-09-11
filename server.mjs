@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Coordinator } from './lib/core.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from './lib/repositories.mjs';
 import { setupStatus, listRepositories } from './lib/setup.mjs';
+import { launchAutonomous } from './lib/autostart.mjs';
 
 export function createServer(engine) {
   engine.pushHandler = task => pushCandidate(engine, task);
@@ -47,6 +48,7 @@ export function createServer(engine) {
         else if (url.pathname === '/api/chat') value = await engine.chat(body);
         else if (url.pathname === '/api/accept-plan') value = engine.acceptPlan(body.id);
         else if (url.pathname === '/api/policy') engine.setPolicy(body);
+        else if (url.pathname === '/api/launch') value = await launchAutonomous(engine, body);
         else if (url.pathname === '/api/run-tests') value = await engine.runProjectTests();
         else if (url.pathname === '/api/research') value = await engine.research(body);
         else if (url.pathname === '/api/research-search') value = await engine.searchResearch(body);
