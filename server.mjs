@@ -61,8 +61,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const dir = path.resolve(process.env.COORDINATOR_DATA || fileURLToPath(new URL('./data', import.meta.url)));
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, 'server.lock');
-  try { fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' }); }
-  catch { throw Error(`Workspace is locked. If the previous server crashed, verify its agents have stopped before removing ${lock}.`); }
+  const claimLock = () => fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+  try { claimLock(); }
+  catch {
+    // A lock whose owning process is gone is a crash/closed-window leftover, not a live server.
+    // Reclaim it automatically; a lock held by a running process is still refused.
+    let holder = null;
+    try { holder = JSON.parse(fs.readFileSync(lock, 'utf8')).pid; } catch {}
+    let alive = false;
+    if (Number.isInteger(holder)) { try { process.kill(holder, 0); alive = true; } catch (e) { alive = e.code === 'EPERM'; } }
+    if (alive) throw Error(`Another coordinator is already running (process ${holder}). Stop it first, or use a different COORDINATOR_DATA directory and PORT.`);
+    console.log(`Clearing a stale lock left by a previous run${holder ? ` (process ${holder} is no longer running)` : ''}.`);
+    fs.rmSync(lock, { force: true });
+    claimLock();
+  }
   let server;
   try {
     const engine = new Coordinator(dir); server = createServer(engine);
