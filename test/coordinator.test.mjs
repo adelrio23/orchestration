@@ -9,6 +9,7 @@ import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, githubReadiness } from '../lib/setup.mjs';
+import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence } from '../lib/research.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
 const planReply = (tasks = [{ title: 'First milestone', requirements: 'Implement a useful feature and tests', acceptance: 'Feature tests pass', scope: ['app.txt', 'test/'] }], questions = []) => '<coordinator-plan>'+JSON.stringify({summary:'A small sequential plan',questions,tasks})+'</coordinator-plan>';
@@ -430,4 +431,90 @@ test('the file-proposal cap follows the configured limit', async () => {
   const t2 = add(c2, { scope: ['src/'] }); c2.control('start'); await stage(c2);
   assert.equal(t2.status, 'blocked');
   assert.match(t2.blocked, /at most 5/);
+});
+
+// --- Cited research -------------------------------------------------------
+const page = (title, body) => ({ ok: true, status: 200, text: async () => `<html><head><title>${title}</title></head><body><p>${body}</p><script>ignored()</script></body></html>` });
+const publicDns = { lookup: async () => [{ address: '93.184.216.34' }] };
+
+test('research refuses anything but a public https source', async () => {
+  const cases = ['http://example.com', 'https://localhost/x', 'https://127.0.0.1/x', 'https://10.0.0.5/x', 'https://user:pw@example.com', 'ftp://example.com', 'not a url'];
+  for (const url of cases) await assert.rejects(() => assertPublicHttps(url, publicDns), Error, `refused ${url}`);
+  await assert.rejects(() => assertPublicHttps('https://intranet.example.com', { lookup: async () => [{ address: '192.168.1.9' }] }), /private or loopback/);
+  assert.equal((await assertPublicHttps('https://example.com/pricing', publicDns)).href, 'https://example.com/pricing');
+});
+
+test('retrieved evidence keeps the URL, fetch time and verbatim text', async () => {
+  const fetcher = async () => page('Competitor pricing', 'Plans start at 19 dollars per month.');
+  const source = await fetchSource('https://example.com/pricing', { fetcher, resolver: publicDns });
+  assert.equal(source.ok, true);
+  assert.equal(source.url, 'https://example.com/pricing');
+  assert.equal(source.title, 'Competitor pricing');
+  assert.match(source.excerpt, /19 dollars per month/);
+  assert.doesNotMatch(source.excerpt, /ignored\(\)/, 'script contents are stripped');
+  assert.ok(!Number.isNaN(Date.parse(source.fetchedAt)), 'records when it was fetched');
+});
+
+test('a failed source is recorded as failed rather than silently dropped', async () => {
+  const fetcher = async url => url.includes('good') ? page('Good', 'Real text.') : { ok: false, status: 404 };
+  const evidence = await gatherEvidence('What do competitors charge?', ['https://good.example.com/a', 'https://bad.example.com/b'], { fetcher, resolver: publicDns });
+  assert.equal(evidence.retrieved, 1);
+  assert.deepEqual(evidence.failed.map(f => f.error), ['HTTP 404']);
+  assert.equal(evidence.sources.length, 2);
+  assert.equal(evidence.review, null, 'evidence starts unreviewed');
+});
+
+test('unreviewed or rejected evidence never reaches the planner', async () => {
+  const fetcher = async () => page('Source', 'Some market text.');
+  const evidence = await gatherEvidence('Question?', ['https://example.com/a'], { fetcher, resolver: publicDns });
+  assert.equal(usableEvidence(evidence), null, 'unreviewed evidence is withheld');
+  evidence.review = { provider: 'kimi', passed: false, at: new Date().toISOString(), text: 'REVIEW: FAIL' };
+  assert.equal(usableEvidence(evidence), null, 'rejected evidence is withheld');
+  evidence.review = { provider: 'kimi', passed: true, at: new Date().toISOString(), text: 'REVIEW: PASS' };
+  const usable = usableEvidence(evidence);
+  assert.equal(usable.citations.length, 1);
+  assert.equal(usable.citations[0].url, 'https://example.com/a');
+  assert.match(usable.rules, /not supported by the retrieved sources/);
+});
+
+test('research retrieval spends no call budget and reviewing spends exactly one', async () => {
+  let prompts = 0;
+  const c = fixture(async (provider, config, prompt) => { prompts++; return okay('The excerpts are on-topic and recent.\nREVIEW: PASS'); });
+  c.control('pause');
+  c.state.research = await gatherEvidence('Who competes?', ['https://example.com/a'], { fetcher: async () => page('Rival', 'Rival charges 19 dollars.'), resolver: publicDns });
+  assert.equal(c.state.calls, 0, 'retrieval is free');
+  const review = await c.reviewResearch({ provider: 'codex' });
+  assert.equal(review.passed, true);
+  assert.equal(c.state.calls, 1, 'review costs exactly one call');
+  assert.equal(prompts, 1);
+  assert.equal(c.state.runs.at(-1).role, 'research_review');
+});
+
+test('the lead is given passed evidence and told to cite it', async () => {
+  let leadPrompt = '';
+  const c = fixture(async (provider, config, prompt, role) => { leadPrompt = prompt; return okay(planReply()); });
+  c.control('pause');
+  c.state.research = await gatherEvidence('Who competes?', ['https://example.com/a'], { fetcher: async () => page('Rival', 'Rival charges 19 dollars.'), resolver: publicDns });
+  c.state.research.review = { provider: 'kimi', passed: true, at: new Date().toISOString(), text: 'REVIEW: PASS' };
+  await c.chat({ provider: 'codex', intent: 'plan', message: 'Plan the next milestones.', autoStart: false });
+  assert.match(leadPrompt, /CITED EVIDENCE/);
+  assert.match(leadPrompt, /https:\/\/example\.com\/a/);
+  assert.match(leadPrompt, /not supported by the retrieved sources/);
+});
+
+test('the lead assigns a role to each milestone and the builder is told its role', async () => {
+  let buildPrompt = '';
+  const plan = planReply([{ title: 'Add the API', role: 'backend', requirements: 'Implement the endpoint and tests', acceptance: 'Endpoint tests pass', scope: ['app.txt', 'test/'] }]);
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (prompt.includes('Act as the project lead')) return okay(plan);
+    if (role === 'review') return okay('Sound plan.\nREVIEW: PASS');
+    buildPrompt = prompt; fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay('Implemented');
+  });
+  c.control('pause');
+  await c.chat({ provider: 'codex', intent: 'plan', message: 'Plan it.', autoStart: true });
+  const queued = c.state.tasks.at(-1);
+  assert.equal(queued.role, 'backend', 'the assigned role is stored on the task');
+  c.control('start'); await stage(c);
+  assert.match(buildPrompt, /backend specialist the project lead assigned/);
+  assert.match(buildPrompt, /"assignedRole":"backend"/);
 });
