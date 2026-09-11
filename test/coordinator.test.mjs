@@ -1004,3 +1004,38 @@ test('refusing a dirty repository names the files that are in the way', () => {
     return true;
   });
 });
+
+test('a download that checks out dirty is normalised instead of being refused', async () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'crlf-'));
+  const c = new Coordinator(path.join(dir, 'state'), { executor: async () => okay() });
+  const runner = async (command, args, opts) => {
+    const target = path.join(opts.cwd, 'ytfactory');
+    fs.mkdirSync(target, { recursive: true }); git(target, 'init');
+    fs.writeFileSync(path.join(target, 'app.py'), 'print("hi")\n'); git(target, 'add', '.');
+    git(target, '-c', 'user.name=T', '-c', 'user.email=t@l', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initial');
+    fs.writeFileSync(path.join(target, 'app.py'), 'print("hi")\r\n');  // what autocrlf does on Windows
+    fs.writeFileSync(path.join(target, 'stray.tmp'), 'junk');
+    assert.ok(git(target, 'status', '--porcelain'), 'the checkout really is dirty first');
+    return { code: 0, reason: '', output: 'Cloning…', durationMs: 1 };
+  };
+  const result = await cloneFromGitHub(c, { name: 'adelrio23/ytfactory', requirements: 'Fix the queries', testCommands: [['python', '-m', 'unittest']] },
+    { runner, repositories: async () => [{ name: 'adelrio23/ytfactory', isPrivate: true, eligible: true }] });
+  assert.equal(c.state.repo, result.repo, 'it configured despite the dirty checkout');
+  assert.equal(git(result.repo, 'status', '--porcelain'), '', 'the checkout was normalised');
+  assert.ok(!fs.existsSync(path.join(result.repo, 'stray.tmp')), 'untracked leftovers are cleared');
+});
+
+test('downloading again reuses the copy already on disk instead of dead-ending', async () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'reuse-'));
+  const c = new Coordinator(path.join(dir, 'state'), { executor: async () => okay() });
+  const target = path.join(c.dir, 'projects', 'ytfactory');
+  fs.mkdirSync(target, { recursive: true }); git(target, 'init');
+  fs.writeFileSync(path.join(target, 'app.py'), 'x\n'); git(target, 'add', '.');
+  git(target, '-c', 'user.name=T', '-c', 'user.email=t@l', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initial');
+  let cloned = false;
+  const result = await cloneFromGitHub(c, { name: 'adelrio23/ytfactory', requirements: 'Fix it', testCommands: [['python', '-m', 'unittest']] },
+    { runner: async () => { cloned = true; return { code: 0, reason: '', output: '', durationMs: 1 }; }, repositories: async () => [{ name: 'adelrio23/ytfactory', isPrivate: true, eligible: true }] });
+  assert.equal(cloned, false, 'it does not re-download what is already there');
+  assert.equal(path.resolve(result.repo), path.resolve(target));
+  assert.equal(c.state.repo, result.repo);
+});
