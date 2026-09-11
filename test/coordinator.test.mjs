@@ -54,6 +54,7 @@ test('quota checkpoints edits, reassigns eligible builder, never retries blocked
 });
 test('simulated Claude recovery requires explicit enable; independent review resumes', async () => {
   const c = fixture(async (provider, config, prompt, role, cwd) => { if (role === 'build') fs.writeFileSync(path.join(cwd, 'app.txt'), 'new'); return okay(role === 'review' ? 'REVIEW: PASS' : 'done'); });
+  c.provider('claude', false); // an operator-disabled provider must be re-enabled by hand
   const t = add(c, { eligible: ['codex', 'claude'] }); c.control('start'); await stage(c); await stage(c); assert.equal(t.status, 'waiting');
   c.provider('claude', true); await stage(c); assert.equal(t.status, 'ready'); assert.equal(t.review.provider, 'claude');
 });
@@ -755,7 +756,7 @@ function consensusFixture(verdictsByRound) {
 }
 
 test('a single dissenting agent keeps the run going and records what is missing', async () => {
-  const c = consensusFixture([{ codex: true, kimi: false }]);
+  const c = consensusFixture([{ codex: true, kimi: false, claude: true }]);
   const t = add(c); t.status = 'integrated';
   await c.settleCompletion();
   assert.equal(c.state.consensus.complete, false);
@@ -767,11 +768,11 @@ test('a single dissenting agent keeps the run going and records what is missing'
 });
 
 test('the run ends only when every available agent agrees', async () => {
-  const c = consensusFixture([{ codex: true, kimi: true }]);
+  const c = consensusFixture([{ codex: true, kimi: true, claude: true }]);
   const t = add(c); t.status = 'integrated';
   await c.settleCompletion();
   assert.equal(c.state.consensus.complete, true);
-  assert.deepEqual(c.state.consensus.agreed.sort(), ['codex', 'kimi']);
+  assert.deepEqual(c.state.consensus.agreed.sort(), ['claude', 'codex', 'kimi']);
   assert.match(c.state.autoPlanStopped, /All agents agree the goal is met/);
   assert.equal(c.state.mode, 'paused');
 });
@@ -786,7 +787,7 @@ test('completion needs a real verdict line, not an agent merely sounding positiv
 });
 
 test('completion is not declared when there is no budget to ask', async () => {
-  const c = consensusFixture([{ codex: true, kimi: true }]);
+  const c = consensusFixture([{ codex: true, kimi: true, claude: true }]);
   c.setLimits({ ...c.state.limits, maxCalls: 1 });
   const t = add(c); t.status = 'integrated';
   assert.equal(await c.consensusComplete(), null, 'it declines rather than assuming completion');
@@ -876,7 +877,7 @@ test('a GitHub problem does not stop the run; it continues locally and says so',
 
 test('launching refuses to start with only one agent rather than skipping review', async () => {
   const c = launchEngine(leadExecutor);
-  c.provider('kimi', false);
+  c.provider('kimi', false); c.provider('claude', false);
   await assert.rejects(() => launchAutonomous(c, { name: 'my-app', requirements: 'Build it', github: false }), /Two signed-in agents are required/);
 });
 
@@ -1038,4 +1039,14 @@ test('downloading again reuses the copy already on disk instead of dead-ending',
   assert.equal(cloned, false, 'it does not re-download what is already there');
   assert.equal(path.resolve(result.repo), path.resolve(target));
   assert.equal(c.state.repo, result.repo);
+});
+
+test('every agent starts enabled; availability comes from the live check, not a stale note', () => {
+  const c = new Coordinator(fs.mkdtempSync(path.join(fixtures, 'providers-')), { executor: async () => okay() });
+  for (const [name, provider] of Object.entries(c.state.providers)) {
+    assert.equal(provider.enabled, true, `${name} starts enabled`);
+    assert.equal(provider.blocked, null, `${name} starts unblocked`);
+  }
+  // Three agents means a build, an independent review and a three-way vote.
+  assert.equal(Object.values(c.state.providers).filter(p => p.enabled && !p.blocked).length, 3);
 });
