@@ -47,6 +47,7 @@ export function createServer(engine) {
         else if (url.pathname === '/api/accept-plan') value = engine.acceptPlan(body.id);
         else if (url.pathname === '/api/policy') engine.setPolicy(body);
         else if (url.pathname === '/api/research') value = await engine.research(body);
+        else if (url.pathname === '/api/research-search') value = await engine.searchResearch(body);
         else if (url.pathname === '/api/research-review') value = await engine.reviewResearch(body);
         else if (url.pathname === '/api/local-repository') value = createLocal(engine, body.name);
         else if (url.pathname === '/api/project') value = createProject(engine, body);

@@ -9,7 +9,7 @@ import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, githubReadiness } from '../lib/setup.mjs';
-import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence } from '../lib/research.mjs';
+import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
 const fixtures = path.resolve('data/test-fixtures'); fs.mkdirSync(fixtures, { recursive: true });
 const planReply = (tasks = [{ title: 'First milestone', requirements: 'Implement a useful feature and tests', acceptance: 'Feature tests pass', scope: ['app.txt', 'test/'] }], questions = []) => '<coordinator-plan>'+JSON.stringify({summary:'A small sequential plan',questions,tasks})+'</coordinator-plan>';
@@ -517,4 +517,55 @@ test('the lead assigns a role to each milestone and the builder is told its role
   c.control('start'); await stage(c);
   assert.match(buildPrompt, /backend specialist the project lead assigned/);
   assert.match(buildPrompt, /"assignedRole":"backend"/);
+});
+
+test('the research role gets web tools and no other role does', () => {
+  const claudeResearch = invocation('claude', { command: 'claude', models: {} }, 'p', 'research', '/tmp');
+  assert.ok(claudeResearch.args.join(' ').includes('WebSearch,WebFetch'), 'research may search');
+  assert.doesNotMatch(claudeResearch.args.join(' '), /Read\(/, 'research gets no file access');
+  const claudeBuild = invocation('claude', { command: 'claude', models: {} }, 'p', 'build', '/tmp');
+  assert.doesNotMatch(claudeBuild.args.join(' '), /WebSearch|WebFetch/, 'building stays offline');
+  assert.ok(invocation('codex', { command: 'codex', models: {} }, 'p', 'research', '/tmp').args.includes('--search'));
+  assert.ok(!invocation('codex', { command: 'codex', models: {} }, 'p', 'build', '/tmp').args.includes('--search'));
+  assert.match(invocation('kimi', { command: 'kimi', models: {} }, 'p', 'research', '/tmp').args.join(' '), /kimi-researcher\.md/);
+  assert.match(invocation('kimi', { command: 'kimi', models: {} }, 'p', 'build', '/tmp').args.join(' '), /kimi-reader\.md/);
+});
+
+test('a fabricated citation is discarded, a real one is kept', async () => {
+  const findings = [
+    { claim: 'Rival charges 19 dollars', url: 'https://real.example.com/pricing', quote: 'Plans start at 19 dollars per month' },
+    { claim: 'Rival has 40 million users', url: 'https://real.example.com/pricing', quote: 'We serve 40 million users worldwide' },
+    { claim: 'Invented statistic', url: 'https://missing.example.com/report', quote: 'anything' }
+  ];
+  const fetcher = async url => url.includes('real') ? page('Pricing', 'Plans start at 19 dollars per month. Contact sales.') : { ok: false, status: 404 };
+  const verified = await verifyFindings(findings, { fetcher, resolver: publicDns });
+  assert.equal(verified[0].verified, true, 'a quote actually on the page is kept');
+  assert.equal(verified[1].verified, false, 'a quote the page does not contain is rejected');
+  assert.equal(verified[2].verified, false, 'an unreachable source is rejected');
+  assert.match(verified[2].reason, /could not be re-fetched/);
+
+  const evidence = evidenceFromFindings('Who competes?', 'codex', verified);
+  assert.equal(evidence.retrieved, 1);
+  assert.equal(evidence.sources.length, 1, 'only the confirmed finding becomes citable evidence');
+  assert.equal(evidence.failed.length, 2);
+  assert.equal(evidence.review, null, 'agent-found evidence still needs independent review');
+});
+
+test('quote matching ignores whitespace and smart quotes but not substance', async () => {
+  const fetcher = async () => page('Doc', 'We charge $19 per month for the “Pro” plan.');
+  const verified = await verifyFindings([
+    { claim: 'a', url: 'https://example.com/a', quote: 'we charge $19   per month for the "Pro" plan' },
+    { claim: 'b', url: 'https://example.com/a', quote: 'we charge $29 per month' }
+  ], { fetcher, resolver: publicDns });
+  assert.equal(verified[0].verified, true, 'formatting differences are tolerated');
+  assert.equal(verified[1].verified, false, 'a different number is not');
+});
+
+test('malformed research output is rejected rather than half-trusted', () => {
+  assert.throws(() => parseFindings('no block here'), /exactly one <coordinator-research> block/);
+  assert.throws(() => parseFindings('<coordinator-research>{"findings":[]}</coordinator-research>'), /no findings/);
+  assert.throws(() => parseFindings('<coordinator-research>{"findings":[{"claim":"x","quote":"y"}]}</coordinator-research>'), /source URL/);
+  assert.throws(() => parseFindings('<coordinator-research>{"findings":[{"claim":"x","url":"https://e.com"}]}</coordinator-research>'), /verbatim quote/);
+  const ok = parseFindings('<coordinator-research>{"findings":[{"claim":"x","url":"https://e.com","quote":"y"}]}</coordinator-research>');
+  assert.deepEqual(ok, [{ claim: 'x', url: 'https://e.com', quote: 'y' }]);
 });
