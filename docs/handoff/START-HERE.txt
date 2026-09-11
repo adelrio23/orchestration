@@ -1,0 +1,10 @@
+WINDOWS TRANSFER
+
+1. Copy this entire package to the NEW PC and extract it into Documents.
+2. Install Node.js 22 or later and Git. Install Codex and Kimi; Claude requires its WSL setup. Sign in separately on the new PC.
+3. Open a terminal in this extracted folder and run: node prepare-new-pc.mjs
+4. Double-click coordinator\start.cmd.
+5. In Codex, select THIS COMPUTER, add the extracted coordinator folder as a local project, and start a new chat. Ask it to read ../CONTINUE-HERE.md and ../CONVERSATION.md.
+
+This restores working context and project files, not the original native conversation ID. Keep the old PC conversation until you confirm the new project works.
+The coordinator-history.bundle preserves Git history; a local agent can restore it into this source folder without overwriting changes.
