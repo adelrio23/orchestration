@@ -386,7 +386,7 @@ test('a failed review returns the task to the builder with the findings, then in
   assert.equal(seen.length, 2);
   assert.equal(seen[0].reviewFindingsToAddress, null);
   assert.match(seen[1].reviewFindingsToAddress, /Missing error handling/);
-  assert.deepEqual(seen[1].repairRound, { round: 1, of: 2 });
+  assert.deepEqual(seen[1].repairRound, { round: 1, of: c.state.limits.maxRepairRounds });
 });
 
 test('repair rounds are bounded and then stop for inspection', async () => {

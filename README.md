@@ -73,7 +73,7 @@ Autonomy is opt-in and off by default.
 
 ## Limits
 
-Defaults: **60 total coordinator CLI attempts**, **6 planning rounds**, **2 attempts per task stage**, **2 repair rounds per task**, **1 concurrent task**, **100 tasks**, **40 proposed files per attempt**, **8 milestones per plan**, **5 minutes per agent call**, **1 minute per test command**, **2 MB captured output**, **40,000 characters of coordinator context**. Chat shares the call budget. CLI preflight failures consume an attempt conservatively. Limits can be adjusted only while paused and drained, within validated maximums.
+Defaults: **300 total coordinator CLI attempts**, **20 planning rounds**, **3 attempts per task stage**, **3 repair rounds per task**, **1 concurrent task**, **100 tasks**, **40 proposed files per attempt**, **8 milestones per plan**, **10 minutes per agent call**, **10 minutes per test command**, **2 MB captured output**, **40,000 characters of coordinator context**. Chat shares the call budget. CLI preflight failures consume an attempt conservatively. Limits can be adjusted only while paused and drained, within validated maximums.
 
 These are coordinator-invocation limits, not a promise to meter or cap every model/tool request inside a third-party CLI. Exact provider quota balances/reset times are not universally available. Token estimates use characters/4 and exclude CLI system context and tool calls. Routing uses recorded role-specific completion/failure outcomes only; it is not model training or a quality ranking.
 
