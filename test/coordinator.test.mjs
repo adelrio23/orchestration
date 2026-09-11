@@ -9,7 +9,7 @@ import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
-import { launchAutonomous } from '../lib/autostart.mjs';
+import { launchAutonomous, cloneFromGitHub } from '../lib/autostart.mjs';
 import { projectChoices } from '../lib/project-picker.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
@@ -895,4 +895,44 @@ test('the project picker finds repositories in the home folder and common projec
     for (const expected of [inHome, inDocuments, inOneDrive]) assert.ok(found.includes(expected), `found ${expected}`);
     assert.ok(!found.some(p => p.endsWith('not-a-repo')), 'a plain folder is not offered as a repository');
   } finally { os.homedir = realHome; }
+});
+
+test('a GitHub repository can be downloaded and configured as the project', async () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'clone-'));
+  const c = new Coordinator(path.join(dir, 'state'), { executor: async () => okay() });
+  const issued = [];
+  const runner = async (command, args, opts) => {
+    issued.push({ command, args });
+    // Stand in for gh: produce a real repository at the requested destination.
+    const target = path.join(opts.cwd, 'ytfactory');
+    fs.mkdirSync(target, { recursive: true }); git(target, 'init');
+    fs.writeFileSync(path.join(target, 'app.py'), 'print("hi")\n'); git(target, 'add', '.');
+    git(target, '-c', 'user.name=T', '-c', 'user.email=t@l', '-c', 'commit.gpgsign=false', 'commit', '-m', 'Initial');
+    return { code: 0, reason: '', output: 'Cloning…', durationMs: 1 };
+  };
+  const result = await cloneFromGitHub(c, { name: 'adelrio23/ytfactory', requirements: 'Fix the scene queries', testCommands: [['python', '-m', 'unittest']] },
+    { runner, repositories: async () => [{ name: 'adelrio23/ytfactory', isPrivate: true, eligible: true }] });
+
+  assert.ok(issued[0].args.includes('clone'), 'it clones through the GitHub CLI');
+  assert.ok(issued[0].args.includes('adelrio23/ytfactory'));
+  assert.equal(c.state.repo, result.repo, 'the clone becomes the project');
+  assert.ok(fs.existsSync(path.join(result.repo, '.git')));
+  assert.equal(c.state.requirements, 'Fix the scene queries');
+  assert.deepEqual(c.state.testCommands, [['python', '-m', 'unittest']], 'the project keeps its own test command');
+});
+
+test('downloading refuses a repository that is not on the account, and a bad name', async () => {
+  const c = new Coordinator(fs.mkdtempSync(path.join(fixtures, 'clone2-')), { executor: async () => okay() });
+  const deps = { runner: async () => { throw Error('must not clone'); }, repositories: async () => [{ name: 'adelrio23/mine', isPrivate: true, eligible: true }] };
+  await assert.rejects(() => cloneFromGitHub(c, { name: 'someoneelse/theirs', requirements: 'x' }, deps), /not in your GitHub account/);
+  await assert.rejects(() => cloneFromGitHub(c, { name: 'not-a-repo-name', requirements: 'x' }, deps), /owner\/repository/);
+});
+
+test('a failed download reports the reason instead of leaving a half-configured project', async () => {
+  const c = new Coordinator(fs.mkdtempSync(path.join(fixtures, 'clone3-')), { executor: async () => okay() });
+  await assert.rejects(() => cloneFromGitHub(c, { name: 'adelrio23/ytfactory', requirements: 'x' }, {
+    runner: async () => ({ code: 1, reason: '', output: 'gh: repository not found', durationMs: 1 }),
+    repositories: async () => [{ name: 'adelrio23/ytfactory', isPrivate: true, eligible: true }]
+  }), /Could not clone/);
+  assert.equal(c.state.repo, null, 'no project is configured when the download fails');
 });
