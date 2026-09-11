@@ -936,3 +936,54 @@ test('a failed download reports the reason instead of leaving a half-configured 
   }), /Could not clone/);
   assert.equal(c.state.repo, null, 'no project is configured when the download fails');
 });
+
+test('a confirmed-stopped agent is retried automatically instead of halting the run', async () => {
+  let attempts = 0;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (++attempts === 1) return { status: 'interrupted', reason: 'timeout', text: '', diagnostic: 'timed out', usage: { source: 'unavailable', values: null } };
+    fs.writeFileSync(path.join(cwd, 'app.txt'), 'new\n'); return okay('Implemented');
+  });
+  const t = add(c); c.control('start'); await stage(c);
+  assert.equal(t.status, 'queued', 'the task is retried');
+  assert.equal(c.state.recoveryRequired, undefined, 'no human confirmation is demanded');
+  assert.equal(c.state.mode, 'running', 'the run keeps going');
+  await stage(c);
+  assert.equal(t.stage, 'review', 'the retry succeeded');
+});
+
+test('a stop whose cause is unknown still halts for a human', async () => {
+  const c = fixture(async () => ({ status: 'interrupted', reason: 'termination_uncertain', text: '', diagnostic: '', usage: { source: 'unavailable', values: null } }));
+  const t = add(c); c.control('start'); await stage(c);
+  assert.equal(t.status, 'interrupted');
+  assert.equal(c.state.mode, 'paused');
+  assert.match(c.state.recoveryRequired, /termination uncertain/i);
+});
+
+test('the watchdog stops a call that has hung well past its own timeout', async () => {
+  let aborted = false;
+  const c = fixture(async (provider, config, prompt, role, cwd, limits, signal) => {
+    signal?.addEventListener('abort', () => { aborted = true; });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    return { status: 'interrupted', reason: 'cancelled', text: '', diagnostic: '', usage: { source: 'unavailable', values: null } };
+  });
+  c.setLimits({ ...c.state.limits, timeoutMs: 1000, stuckAfterMs: 60000 });
+  const t = add(c); c.control('start'); c.tick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  t.startedAt = Date.now() - 3600000; // pretend it has been hanging for an hour
+  c.watchdog();
+  assert.equal(aborted, true, 'the hung call is aborted');
+  assert.equal(t.stuckStops, 1, 'the intervention is recorded');
+  assert.ok(c.state.events.some(e => e.type === 'watchdog_stopped'), 'and reported in the timeline');
+  await drain(c);
+});
+
+test('the watchdog leaves a call that is merely slow alone', async () => {
+  const c = fixture(async () => { await new Promise(r => setTimeout(r, 300)); return okay('done'); });
+  c.setLimits({ ...c.state.limits, timeoutMs: 300000, stuckAfterMs: 600000 });
+  const t = add(c); c.control('start'); c.tick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  t.startedAt = Date.now() - 60000; // one minute in, well inside its timeout
+  c.watchdog();
+  assert.equal(t.stuckStops, undefined, 'a slow call is not disturbed');
+  await drain(c);
+});

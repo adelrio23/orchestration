@@ -62,6 +62,8 @@ It stops by itself, pausing and stating why, when the call budget cannot fund an
 
 Autonomy is opt-in and off by default.
 
+**Staying alive.** Every call has its own timeout, and a watchdog additionally stops any dispatch still running well past it (`stuckAfterMs`, default 10 minutes), recording the intervention so a hang cannot stall a run indefinitely. A stop the coordinator caused and confirmed — timeout, cancellation, output limit — is retried automatically within the attempt cap. Only a termination that could not be confirmed, or one with no reported cause, pauses for a human, because a process that may still be alive is not safe to work around.
+
 **Budget awareness.** Every agent — lead, builder, reviewer and completion voter — is given the same brief: calls used and remaining, what a milestone costs, planning rounds used and allowed, the file cap, and Codex's measured subscription percentages with their reset times where reported. They are told to scope work to what is left and to prefer fewer higher-value milestones when it is short. The completion vote is explicitly told to judge the goal on its merits and never approve unfinished work because the budget is low. Usage no provider reports is stated as unreported, never as zero.
 
 **Quota and availability.** Codex's rate limits are read every five minutes with no model turns, and the reported reset time is stored, so a blocked provider shows when it is expected back and queued work resumes automatically. Kimi and Claude report no percentage, so their return is probed with backoff; once a known reset time passes, the attempt allowance is restored rather than the provider being abandoned.
