@@ -72,7 +72,7 @@ function serverAddress(res) { return `127.0.0.1:${res.socket.localPort}`; }
 // never stop the server, and COORDINATOR_NO_OPEN=1 turns it off.
 export function openDashboard(url, spawner = spawn) {
   if (process.env.COORDINATOR_NO_OPEN === '1') return false;
-  const [command, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+  const [command, args] = process.platform === 'win32' ? ['explorer.exe', [url]]
     : process.platform === 'darwin' ? ['open', [url]]
     : ['xdg-open', [url]];
   try {

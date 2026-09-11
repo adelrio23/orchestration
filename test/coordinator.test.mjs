@@ -707,7 +707,7 @@ test('the dashboard is opened with the platform browser command, and never crash
   assert.equal(openDashboard('http://127.0.0.1:4317', spawner), true);
   assert.equal(calls.length, 1);
   assert.ok(calls[0].args.includes('http://127.0.0.1:4317'), 'the dashboard URL is passed through');
-  const expected = { win32: 'cmd', darwin: 'open' }[process.platform] || 'xdg-open';
+  const expected = { win32: 'explorer.exe', darwin: 'open' }[process.platform] || 'xdg-open';
   assert.equal(calls[0].command, expected);
 
   // A machine with no opener must not take the server down with it.
