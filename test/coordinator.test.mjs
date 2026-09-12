@@ -128,7 +128,9 @@ test('parses measured usage, auth, quota, malformed output and termination conse
   assert.equal(parseResult('claude', { code: -1, output: '', reason: 'termination_uncertain' }).status, 'interrupted');
 });
 test('automatic integration runs once after approval', async () => {
-  const { c, t } = await ready(); c.control('resume'); c.tick();
+  const { c, t } = await ready();
+  c.state.policy.autoPlan = false; // this test counts integration calls, not continuation
+  c.control('resume'); c.tick();
   for (let i = 0; i < 200 && c.integrating; i++) await new Promise(r => setTimeout(r, 10));
   assert.equal(t.status, 'integrated'); assert.ok(t.integrationAttempt);
   c.tick(); assert.equal(c.state.calls, 2); c.control('pause'); await assert.rejects(c.integrate(t.id), /already attempted/);
@@ -693,12 +695,13 @@ test('an autonomous run stops at the planning round cap instead of looping forev
   if (c.state.autoPlanStopped) assert.match(c.state.autoPlanStopped, /planning round cap|call budget/);
 });
 
-test('autoPlan stays off unless it is turned on', async () => {
-  const c = fixture(async () => okay());
-  assert.equal(c.state.policy.autoPlan, false, 'autonomy is opt-in');
+test('autonomy is on by default and can be turned off', async () => {
+  const c = fixture(async () => okay(planReply()));
+  assert.equal(c.state.policy.autoPlan, true, 'a run continues without being asked to');
+  c.setPolicy({ autoIntegrate: true, autoPush: false, autoPlan: false });
   const t = add(c); t.status = 'integrated';
   c.control('start'); await settle(c, 5);
-  assert.equal(c.state.planningRounds, 0, 'no planning happens on its own');
+  assert.equal(c.state.planningRounds, 0, 'turning it off stops the continuation');
 });
 
 test('the dashboard is opened with the platform browser command, and never crashes the server', () => {
@@ -1178,4 +1181,75 @@ test('a long brief is accepted rather than truncated at four thousand characters
   const record = await c.chat({ provider: 'codex', message: brief });
   assert.equal(record.status, 'ok', 'a long brief is accepted');
   await assert.rejects(() => c.chat({ provider: 'codex', message: 'x'.repeat(20001) }), /at most/);
+});
+
+test('each integrated milestone is remembered and reaches later agents for free', async () => {
+  let seen = null;
+  const c = fixture(async (provider, config, prompt, role, cwd) => {
+    if (role === 'build') { seen = contextOf(prompt); fs.writeFileSync(path.join(cwd, 'app.txt'), `v${Math.random()}\n`); return okay('Added the parser and its tests'); }
+    return okay('Meets the criteria.\nREVIEW: PASS');
+  });
+  c.state.policy.autoPlan = false;
+  const first = add(c, { title: 'Add the parser' });
+  c.control('start'); await stage(c); await stage(c);
+  c.control('pause'); await c.integrate(first.id);
+  const callsAfterMemory = c.state.calls;
+  assert.equal(c.state.memory.length, 1, 'the milestone is recorded');
+  assert.match(c.state.memory[0].summary, /Added the parser/);
+  assert.equal(c.state.memory[0].title, 'Add the parser');
+  assert.equal(callsAfterMemory, 2, 'remembering costs no model call');
+
+  const second = add(c, { title: 'Use the parser' });
+  c.control('start'); await stage(c);
+  assert.equal(seen.completedMilestones.length, 1, 'the next agent is told what came before');
+  assert.equal(seen.completedMilestones[0].milestone, 'Add the parser');
+  assert.match(seen.completedMilestones[0].what, /Added the parser/);
+});
+
+test('project memory is bounded so a long run cannot grow the prompt without limit', () => {
+  const c = fixture(async () => okay());
+  for (let i = 0; i < 260; i++) c.remember({ title: `Milestone ${i}`, summary: 'x'.repeat(2000) });
+  assert.equal(c.state.memory.length, 200, 'older entries fall off');
+  const brief = c.memoryBrief();
+  assert.equal(brief.length, 12, 'only the recent ones are carried into a prompt');
+  assert.ok(brief.every(entry => entry.what.length <= 600), 'each is truncated');
+});
+
+test('a discussion gives every agent a turn, each hearing the ones before', async () => {
+  const prompts = [];
+  const c = fixture(async (provider, config, prompt) => { prompts.push({ provider, prompt }); return okay(`${provider} thinks the floor should stay as it is.`); });
+  c.control('pause');
+  const discussion = await c.discuss({ topic: 'Should the relevance floor judge against the scene query?' });
+
+  assert.equal(discussion.turns.length, 3, 'all three available agents speak');
+  assert.equal(c.state.calls, 3, 'one call each, no more');
+  assert.match(prompts[0].prompt, /You are speaking first/);
+  assert.doesNotMatch(prompts[0].prompt, /WHAT THE OTHERS HAVE SAID/);
+  assert.match(prompts[1].prompt, /WHAT THE OTHERS HAVE SAID/, 'the second hears the first');
+  assert.match(prompts[1].prompt, new RegExp(`${prompts[0].provider} said`));
+  assert.match(prompts[2].prompt, new RegExp(`${prompts[1].provider} said`), 'the third hears both');
+  assert.match(prompts[2].prompt, /Say plainly where you disagree/);
+});
+
+test('a discussion becomes binding only when its outcome is recorded', async () => {
+  const c = fixture(async (provider) => okay(`${provider}: keep the floor.`));
+  c.control('pause');
+  await c.discuss({ topic: 'The floor' });
+  assert.ok(!c.state.discussion.adopted);
+  assert.equal(c.state.decisions.length, 0, 'talking alone changes nothing');
+
+  c.adoptDiscussion('Keep relevance_to as the scene query; investigate the caller instead.');
+  assert.equal(c.state.discussion.adopted, true);
+  assert.match(c.state.decisions.at(-1).text, /Keep relevance_to/);
+});
+
+test('a discussion is refused without two agents or enough budget', async () => {
+  const c = fixture(async () => okay('a view'));
+  c.control('pause');
+  c.provider('kimi', false); c.provider('claude', false);
+  await assert.rejects(() => c.discuss({ topic: 'anything' }), /at least two available agents/);
+  c.provider('kimi', true); c.provider('claude', true);
+  c.setLimits({ ...c.state.limits, maxCalls: 2 });
+  await assert.rejects(() => c.discuss({ topic: 'anything' }), /Not enough call budget/);
+  assert.equal(c.state.calls, 0, 'nothing is spent on a refused discussion');
 });

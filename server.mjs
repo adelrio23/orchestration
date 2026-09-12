@@ -51,6 +51,8 @@ export function createServer(engine) {
         else if (url.pathname === '/api/launch') value = await launchAutonomous(engine, body);
         else if (url.pathname === '/api/github-project') value = await cloneFromGitHub(engine, body);
         else if (url.pathname === '/api/test-commands') value = engine.setTestCommands(body);
+        else if (url.pathname === '/api/discuss') value = await engine.discuss(body);
+        else if (url.pathname === '/api/adopt-discussion') value = engine.adoptDiscussion(body.text);
         else if (url.pathname === '/api/run-tests') value = await engine.runProjectTests();
         else if (url.pathname === '/api/research') value = await engine.research(body);
         else if (url.pathname === '/api/research-search') value = await engine.searchResearch(body);
