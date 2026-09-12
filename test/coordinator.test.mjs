@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Coordinator, git } from '../lib/core.mjs';
+import { Coordinator, git, defaults } from '../lib/core.mjs';
 import { parseResult, invocation, codexSandbox } from '../lib/adapters.mjs';
 import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer, openDashboard } from '../server.mjs';
@@ -1252,4 +1252,30 @@ test('a discussion is refused without two agents or enough budget', async () => 
   c.setLimits({ ...c.state.limits, maxCalls: 2 });
   await assert.rejects(() => c.discuss({ topic: 'anything' }), /Not enough call budget/);
   assert.equal(c.state.calls, 0, 'nothing is spent on a refused discussion');
+});
+
+test('a workspace still on superseded defaults is carried forward on load', () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'migrate-'));
+  const first = new Coordinator(dir, { executor: async () => okay() });
+  // The values this project shipped with before the defaults were raised.
+  Object.assign(first.state.limits, { maxCalls: 12, testTimeoutMs: 60000, maxAttempts: 2, maxFiles: 10 });
+  first.save();
+
+  const reloaded = new Coordinator(dir, { executor: async () => okay() });
+  assert.equal(reloaded.state.limits.maxCalls, defaults.maxCalls, 'the call budget is raised');
+  assert.equal(reloaded.state.limits.testTimeoutMs, defaults.testTimeoutMs, 'the one-minute test timeout is gone');
+  assert.equal(reloaded.state.limits.maxAttempts, defaults.maxAttempts);
+  assert.equal(reloaded.state.limits.maxFiles, defaults.maxFiles);
+  assert.ok(reloaded.state.events.some(e => e.type === 'limit_default_raised'), 'the change is recorded, not silent');
+});
+
+test('a limit somebody actually chose is never overwritten', () => {
+  const dir = fs.mkdtempSync(path.join(fixtures, 'keep-'));
+  const first = new Coordinator(dir, { executor: async () => okay() });
+  first.setLimits({ ...first.state.limits, maxCalls: 25, testTimeoutMs: 45000 });
+  first.save();
+
+  const reloaded = new Coordinator(dir, { executor: async () => okay() });
+  assert.equal(reloaded.state.limits.maxCalls, 25, 'a deliberate budget survives');
+  assert.equal(reloaded.state.limits.testTimeoutMs, 45000, 'a deliberate timeout survives');
 });
