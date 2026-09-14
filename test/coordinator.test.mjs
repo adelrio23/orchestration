@@ -267,11 +267,15 @@ test('measured quota blocks and recovers eligible work without overriding pause 
   c.provider('codex',false);await c.monitorProviders(true,reader(20));assert.equal(c.state.providers.codex.enabled,false);
   await c.monitorProviders(true,async()=>{throw Error('offline')});assert.deepEqual(c.state.monitor.windows,[]);assert.equal(c.state.monitor.error,'offline');
 });
-test('recovery probes obey pause, call budget, cooldown and three-attempt cap',async()=>{
+test('recovery probes obey pause, call budget and cooldown without abandoning unattended work',async()=>{
   let calls=0;const c=fixture(async()=>{calls++;return {status:'quota',text:'',diagnostic:'quota'}});add(c);c.state.providers.kimi.blocked='quota';
   await c.recoverProvider();assert.equal(calls,0);c.control('start');
-  await c.recoverProvider();assert.equal(calls,1);await c.recoverProvider();assert.equal(calls,1);
-  for(let i=0;i<4;i++){c.state.providers.kimi.nextProbe=0;await c.recoverProvider()}assert.equal(calls,3);assert.equal(c.state.calls,3);
+  await c.recoverProvider();assert.equal(calls,1);const firstDelay=c.state.providers.kimi.nextProbe-Date.now();
+  await c.recoverProvider();assert.equal(calls,1,'cooldown prevents a retry storm');
+  for(let i=0;i<4;i++){c.state.providers.kimi.nextProbe=0;await c.recoverProvider()}
+  assert.equal(calls,5);assert.equal(c.state.calls,5);
+  assert.ok(firstDelay>1700000&&firstDelay<=1800000);
+  assert.ok(c.state.providers.kimi.nextProbe-Date.now()<=14400000,'backoff is capped at four hours');
   assert.equal(c.state.externalOperation,null);
 });
 test('successful recovery queues waiting work and pauses remain respected during an in-flight check',async()=>{
@@ -638,15 +642,15 @@ test('recovering Codex requeues work that was only waiting for a provider', asyn
   assert.equal(t.blocked, null);
 });
 
-test('a passed reset time restores the recovery allowance instead of giving up', async () => {
-  const c = fixture(async () => okay());
+test('an unknown provider window keeps its backoff and probes again when due', async () => {
+  let calls=0;const c = fixture(async () => { calls++; return okay(); });
   const kimi = c.state.providers.kimi;
   kimi.blocked = 'quota: exhausted'; kimi.recoveryAttempts = 3; kimi.availableAt = Date.now() - 1000; kimi.nextProbe = Date.now() + 9e9;
-  const waiting = add(c); waiting.status = 'waiting'; // there is work for it to come back to
+  const waiting = add(c); waiting.status = 'waiting';
   c.control('start');
-  await c.recoverProvider();
-  assert.equal(kimi.recoveryAttempts, 1, 'a new quota window resets the attempt count and probes again');
-  assert.equal(kimi.availableAt !== null, true);
+  await c.recoverProvider();assert.equal(calls,0,'a guessed display time never overrides the real probe cooldown');
+  kimi.nextProbe=0;await c.recoverProvider();
+  assert.equal(calls,1);assert.equal(kimi.blocked,null);assert.equal(waiting.status,'queued');
 });
 
 // --- Autonomous continuation ------------------------------------------------
@@ -1278,4 +1282,24 @@ test('a limit somebody actually chose is never overwritten', () => {
   const reloaded = new Coordinator(dir, { executor: async () => okay() });
   assert.equal(reloaded.state.limits.maxCalls, 25, 'a deliberate budget survives');
   assert.equal(reloaded.state.limits.testTimeoutMs, 45000, 'a deliberate timeout survives');
+});
+
+test('a safe idle restart resumes unattended work but active ownership still pauses', () => {
+  const safe=fixture(async()=>okay());add(safe);safe.state.mode='running';safe.save();
+  const resumed=new Coordinator(safe.dir);assert.equal(resumed.state.mode,'running');assert.equal(resumed.state.recoveryRequired,null);
+  const unsafe=fixture(async()=>okay());const task=add(unsafe);task.status='building';task.owner='codex';unsafe.state.mode='running';unsafe.save();
+  const stopped=new Coordinator(unsafe.dir);assert.equal(stopped.state.mode,'paused');assert.match(stopped.state.recoveryRequired,/Interrupted/);
+});
+
+test('automatic planning replaces a quota-failed lead on the next tick', async () => {
+  let codexCalls=0,kimiCalls=0;
+  const c=fixture(async(provider,config,prompt)=>{
+    if(provider==='codex'){codexCalls++;return {status:'quota',text:'',diagnostic:'quota'};}
+    kimiCalls++;return okay('<coordinator-plan>{"summary":"done","questions":["Need input"],"tasks":[]}</coordinator-plan>');
+  });
+  const done=add(c);done.status='integrated';c.state.policy.autoPlan=true;c.state.mode='running';
+  c.autoPlan();while(c.planning)await new Promise(r=>setTimeout(r,5));
+  assert.match(c.state.providers.codex.blocked,/quota/);
+  c.autoPlan();while(c.planning)await new Promise(r=>setTimeout(r,5));
+  assert.equal(codexCalls,1);assert.equal(kimiCalls,1);
 });
