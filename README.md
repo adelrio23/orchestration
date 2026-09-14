@@ -2,6 +2,8 @@
 
 A local dashboard coordinating installed Codex, Claude Code and Kimi Code CLIs. It uses existing subscription logins, not paid API fallback. No npm packages are required.
 
+**New here? Start with [QUICKSTART.md](QUICKSTART.md).**
+
 ## Start
 
 Requirements: Node.js 22+, Git, the relevant logged-in agent CLIs. On this Windows installation Claude and GitHub CLI run through WSL. Keep these installations and logins working outside the coordinator first.
