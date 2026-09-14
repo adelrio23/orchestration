@@ -226,6 +226,21 @@ test('local HTTP mutations require session token and matching origin', async () 
     const r = await fetch(base + '/api/control', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json' }, body: '{"action":"start"}' }); assert.equal(r.status, 200); assert.equal(c.state.mode, 'running');
   } finally { server.closeAllConnections(); await new Promise(r => server.close(r)); }
 });
+test('restart and exit controls use the bounded lifecycle callback', async () => {
+  const c = fixture(); const requested = [];
+  const server = createServer(c, { requestSystem: action => requested.push(action) });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const html = await (await fetch(base)).text(), token = html.match(/const token='([^']+)'/)[1];
+    for (const action of ['restart', 'exit']) {
+      const response = await fetch(base + '/api/system', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+      assert.equal(response.status, 200);
+    }
+    assert.deepEqual(requested, ['restart', 'exit']);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test('lead plan is durable and does not start work when draft mode is requested', async () => {
   const c = fixture(async () => okay(planReply())); const r = await c.chat({provider:'codex',intent:'plan',message:'Plan the app'});
   assert.equal(r.plan.status,'draft'); assert.equal(c.state.calls,1); assert.equal(c.state.tasks.length,0); assert.equal(c.state.mode,'paused');
