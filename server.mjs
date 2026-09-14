@@ -11,7 +11,7 @@ import { createLocal, createProject, githubTarget, pushCandidate } from './lib/r
 import { setupStatus, listRepositories } from './lib/setup.mjs';
 import { launchAutonomous, cloneFromGitHub } from './lib/autostart.mjs';
 
-export function createServer(engine) {
+export function createServer(engine, { requestSystem = () => { throw Error('System controls unavailable'); } } = {}) {
   engine.pushHandler = task => pushCandidate(engine, task);
   const token = crypto.randomBytes(24).toString('hex');
   return http.createServer(async (req, res) => {
@@ -62,6 +62,7 @@ export function createServer(engine) {
         else if (url.pathname === '/api/github-target') value = await githubTarget(engine, body);
         else if (url.pathname === '/api/push') value = await pushCandidate(engine, engine.task(body.id));
         else if (url.pathname === '/api/recover') engine.acknowledgeRecovery(body.confirmation);
+        else if (url.pathname === '/api/system') { if (!['restart','exit'].includes(body.action)) throw Error('Unknown system action'); requestSystem(body.action); }
         else throw Error('Unknown action');
         value ||= { ok: true };
       } else { res.writeHead(404); res.end(); return; }
@@ -106,7 +107,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   let server;
   try {
-    const engine = new Coordinator(dir); server = createServer(engine);
+    const engine = new Coordinator(dir);
+    const requestSystem = action => {
+      engine.control('stop');
+      process.exitCode = action === 'restart' ? 75 : 0;
+      setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100);
+    };
+    server = createServer(engine, { requestSystem });
     const timer = setInterval(() => { engine.monitorProviders().catch(()=>{}); engine.recoverProvider().catch(()=>{}); engine.tick(); }, 1000);
     server.listen(Number(process.env.PORT || 4317), '127.0.0.1', () => {
       const url = `http://127.0.0.1:${server.address().port}`;

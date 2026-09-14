@@ -9,7 +9,7 @@ import { run, safeEnv, redact } from '../lib/process.mjs';
 import { createServer, openDashboard } from '../server.mjs';
 import { createLocal, createProject, githubTarget, pushCandidate } from '../lib/repositories.mjs';
 import { setupStatus, privateRepositories, listRepositories, githubReadiness } from '../lib/setup.mjs';
-import { launchAutonomous, cloneFromGitHub } from '../lib/autostart.mjs';
+import { launchAutonomous, cloneFromGitHub, detectTestCommands } from '../lib/autostart.mjs';
 import { projectChoices } from '../lib/project-picker.mjs';
 import { assertPublicHttps, fetchSource, gatherEvidence, usableEvidence, parseFindings, verifyFindings, evidenceFromFindings } from '../lib/research.mjs';
 
@@ -69,6 +69,26 @@ test('pause drains active call and resume cannot overlap ownership', async () =>
   const t = add(c); c.control('start'); c.tick(); c.tick(); assert.equal(c.state.calls, 1); c.control('pause'); assert.equal(t.status, 'building');
   finish(); await drain(c); c.tick(); assert.equal(c.state.calls, 1); assert.equal(t.status, 'queued');
 });
+test('Stop now cancels active work, preserves the queue and stays paused', async () => {
+  const c = fixture(async (p, cfg, prompt, role, cwd, limits, signal) => {
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    return { status: 'interrupted', reason: 'cancelled', diagnostic: 'stopped' };
+  });
+  const t = add(c); c.control('start'); c.tick();
+  assert.equal(t.status, 'building'); c.control('stop'); await drain(c);
+  assert.equal(c.state.mode, 'paused'); assert.equal(t.status, 'queued');
+  assert.equal(c.state.events.at(-1).type, 'agent_stopped');
+});
+
+test('repository test commands are detected without asking the operator', () => {
+  const repo = fs.mkdtempSync(path.join(fixtures, 'detect-tests-'));
+  fs.mkdirSync(path.join(repo, 'scripts')); fs.mkdirSync(path.join(repo, 'tests', 'offline'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'scripts', 'test.sh'), '#!/bin/sh');
+  const detected = detectTestCommands(repo);
+  assert.ok(detected.testCommands[0].includes('tests.offline'));
+  assert.ok(detected.integrationTestCommands[0].includes('./scripts/test.sh'));
+});
+
 test('parallel requires explicit independence and disjoint ownership', async () => {
   const releases = [];
   const c = fixture(async () => { await new Promise(r => releases.push(r)); return { status: 'error', diagnostic: 'finish' }; });
@@ -206,6 +226,21 @@ test('local HTTP mutations require session token and matching origin', async () 
     const r = await fetch(base + '/api/control', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json' }, body: '{"action":"start"}' }); assert.equal(r.status, 200); assert.equal(c.state.mode, 'running');
   } finally { server.closeAllConnections(); await new Promise(r => server.close(r)); }
 });
+test('restart and exit controls use the bounded lifecycle callback', async () => {
+  const c = fixture(); const requested = [];
+  const server = createServer(c, { requestSystem: action => requested.push(action) });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const html = await (await fetch(base)).text(), token = html.match(/const token='([^']+)'/)[1];
+    for (const action of ['restart', 'exit']) {
+      const response = await fetch(base + '/api/system', { method: 'POST', headers: { 'X-Coordinator-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+      assert.equal(response.status, 200);
+    }
+    assert.deepEqual(requested, ['restart', 'exit']);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test('lead plan is durable and does not start work when draft mode is requested', async () => {
   const c = fixture(async () => okay(planReply())); const r = await c.chat({provider:'codex',intent:'plan',message:'Plan the app'});
   assert.equal(r.plan.status,'draft'); assert.equal(c.state.calls,1); assert.equal(c.state.tasks.length,0); assert.equal(c.state.mode,'paused');
