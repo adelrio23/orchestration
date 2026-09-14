@@ -8,7 +8,7 @@ const base = {
   calls: 4,
   limits: { maxCalls: 20 },
   recoveryRequired: null,
-  tasks: [{ status: 'waiting' }],
+  tasks: [{ id: 'base', title: 'Base task', status: 'waiting', stage: 'build', eligible: ['codex', 'kimi'] }],
   providers: {}
 };
 
