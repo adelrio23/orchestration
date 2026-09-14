@@ -2,7 +2,7 @@
 
 A local dashboard coordinating installed Codex, Claude Code and Kimi Code CLIs. It uses existing subscription logins, not paid API fallback. No npm packages are required.
 
-**New here? Start with [QUICKSTART.md](QUICKSTART.md). Recording a walkthrough? Use the safe [YouTube demo guide](YOUTUBE_DEMO.md).**
+**New here? Start with [QUICKSTART.md](QUICKSTART.md).**
 
 ## Start
 
