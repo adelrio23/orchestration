@@ -1,13 +1,21 @@
 @echo off
+setlocal
 cd /d "%~dp0"
-where node >nul 2>nul || (echo Node.js is not installed. Get Node.js 22 or newer from https://nodejs.org, then reopen this. & pause & exit /b 1)
-echo Starting Local Agent Coordinator with crash supervision...
-echo Your browser will open automatically. Keep this window open.
-echo Press Ctrl+C here to pause and stop safely.
+title Local Agent Coordinator
+where node >nul 2>nul || (echo Node.js 22 or newer is required. Get it from https://nodejs.org and reopen this file. & pause & exit /b 1)
+where git >nul 2>nul || (echo Git is required. Get it from https://git-scm.com and reopen this file. & pause & exit /b 1)
+echo.
+echo   Local Agent Coordinator
+echo   =======================
+echo   Starting your saved project and opening the dashboard...
+echo   Keep this window open while the team works.
+echo.
 node supervisor.mjs
 if errorlevel 1 (
   echo.
-  echo Supervision stopped after repeated crashes.
-  echo Run "node doctor.mjs" and inspect datasupervisor.jsonl.
+  echo The coordinator could not stay running.
+  echo Run "node doctor.mjs" and inspect data\supervisor.jsonl.
+  pause
+  exit /b 1
 )
-pause
+endlocal
