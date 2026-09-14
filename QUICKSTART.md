@@ -6,7 +6,7 @@ Get the coordinator running before changing any advanced settings.
 
 1. Install **Node.js 22 or newer** and **Git**.
 2. Install and sign in to at least two supported agent CLIs: Codex, Claude Code, or Kimi Code.
-3. Double-click `start.cmd`.
+3. Double-click `start.cmd` (recommended), or run `npm start`. This keeps a bounded crash supervisor active.
 4. Your browser opens to <http://127.0.0.1:4317/>.
 5. In **Project**, select an existing clean Git repository or create a new project.
 6. Enter one concrete goal and keep the default test command only if the project uses Node's test runner.
@@ -46,3 +46,11 @@ Start with **Show me a draft first**. Confirm the proposed milestones and file o
 ## Stop safely
 
 Press **Pause**, allow active bounded calls to drain, then press `Ctrl+C` in the terminal. Do not delete worktrees or state to interrupt a running task.
+
+## Unattended supervision
+
+The normal launcher runs `supervisor.mjs`. An unexpected coordinator exit restarts after increasing delays, capped at five minutes. Eight crashes within one hour stop supervision instead of looping forever. Restart history is written to `data/supervisor.jsonl` (or the configured `COORDINATOR_DATA` directory).
+
+A restart resumes automatically only when the saved state shows no active or uncertain process ownership. If an agent, test, integration, chat, or GitHub operation may still have been active, the coordinator opens paused and requires recovery confirmation. This protects the project from two processes writing simultaneously.
+
+The supervisor cannot keep working if Windows sleeps or the terminal itself is closed. Configure the computer not to sleep while plugged in for long unattended runs.
