@@ -643,7 +643,7 @@ test('recovering Codex requeues work that was only waiting for a provider', asyn
 });
 
 test('an unknown provider window keeps its backoff and probes again when due', async () => {
-  let calls=0;const c = fixture(async () => { calls++; return okay(); });
+  let calls=0;const c = fixture(async () => { calls++; return okay('READY'); });
   const kimi = c.state.providers.kimi;
   kimi.blocked = 'quota: exhausted'; kimi.recoveryAttempts = 3; kimi.availableAt = Date.now() - 1000; kimi.nextProbe = Date.now() + 9e9;
   const waiting = add(c); waiting.status = 'waiting';
@@ -1286,7 +1286,7 @@ test('a limit somebody actually chose is never overwritten', () => {
 
 test('a safe idle restart resumes unattended work but active ownership still pauses', () => {
   const safe=fixture(async()=>okay());add(safe);safe.state.mode='running';safe.save();
-  const resumed=new Coordinator(safe.dir);assert.equal(resumed.state.mode,'running');assert.equal(resumed.state.recoveryRequired,null);
+  const resumed=new Coordinator(safe.dir);assert.equal(resumed.state.mode,'running');assert.equal(resumed.state.recoveryRequired,undefined);
   const unsafe=fixture(async()=>okay());const task=add(unsafe);task.status='building';task.owner='codex';unsafe.state.mode='running';unsafe.save();
   const stopped=new Coordinator(unsafe.dir);assert.equal(stopped.state.mode,'paused');assert.match(stopped.state.recoveryRequired,/Interrupted/);
 });
