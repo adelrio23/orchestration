@@ -27,9 +27,10 @@ test('provider state separates quota, authentication, disabled and available age
   assert.equal(providerOperationalState('claude', { enabled: false, blocked: 'Disabled by operator' }, now).state, 'disabled');
 });
 
-test('team status explains degraded independence and the next recovery', () => {
+test('team status explains task-specific review waiting and the next recovery', () => {
   const state = {
     ...base,
+    tasks: [{ id: 'review', title: 'Review candidate', status: 'waiting', stage: 'review', builder: 'codex', eligible: ['codex', 'kimi'] }],
     providers: {
       codex: { enabled: true, blocked: null },
       kimi: { enabled: true, blocked: 'quota: exhausted', availableAt: now + 60_000 },
@@ -37,9 +38,9 @@ test('team status explains degraded independence and the next recovery', () => {
     }
   };
   const status = teamOperationalStatus(state, 0, now);
-  assert.equal(status.state, 'degraded');
+  assert.equal(status.state, 'waiting_for_usage');
   assert.equal(status.nextRecoveryAt, now + 60_000);
-  assert.match(status.detail, /independent|expected/i);
+  assert.match(status.tasks[0].reason, /kimi|usage/i);
 });
 
 test('team status prioritizes action-required and hard budget boundaries', () => {
