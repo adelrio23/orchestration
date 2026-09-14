@@ -24,7 +24,7 @@ export function createServer(engine) {
       if (req.method === 'GET' && url.pathname === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(fs.readFileSync(new URL('./public/index.html', import.meta.url), 'utf8').replace('__TOKEN__', token)); return; }
       if (req.headers['x-coordinator-token'] !== token) { res.writeHead(403); res.end('Local session required'); return; }
       let value;
-      if (req.method === 'GET' && url.pathname === '/api/state') value = engine.state;
+      if (req.method === 'GET' && url.pathname === '/api/state') value = { ...engine.state, operational: engine.operationalStatus() };
       else if (req.method === 'GET' && url.pathname === '/api/projects') value = projectChoices(engine);
       else if (req.method === 'GET' && url.pathname === '/api/memory') value = engine.portableMemory();
       else if (req.method === 'GET' && url.pathname === '/api/setup') value = { ...await setupStatus(engine), availability: engine.availability() };
